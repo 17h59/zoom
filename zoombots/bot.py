@@ -78,8 +78,9 @@ def classify_text(text: str, in_toolbar: bool = False) -> str:
 
 class Bot:
     def __init__(self, meeting: Meeting, name: str, bot_id: str | None = None,
-                 auto_reconnect: bool = True, on_change=None):
+                 auto_reconnect: bool = True, on_change=None, owner: str | None = None):
         self.id = bot_id or uuid.uuid4().hex[:8]
+        self.owner = owner  # identifiant de session GUI ; None = bot d'administration (persisté)
         self.meeting = meeting
         self.name = name
         self.auto_reconnect = auto_reconnect
@@ -126,6 +127,7 @@ class Bot:
             "playing": self.mic.playing,
             "reconnects": self.reconnects,
             "auto_reconnect": self.auto_reconnect,
+            "owner": self.owner[:6] if self.owner else None,
         }
 
     def to_state(self) -> dict:
@@ -376,12 +378,19 @@ class Bot:
         await asyncio.sleep(0.4)  # laisse Zoom ouvrir le micro avant d'envoyer le son
         return True
 
-    async def play(self, path: Path, volume: float = 1.0, auto_unmute: bool = True) -> None:
+    async def play(self, path: Path, volume: float = 1.0, auto_unmute: bool = True) -> "asyncio.Task[bool]":
         if self.status != "in_meeting":
             raise RuntimeError("le bot n'est pas dans la réunion")
         if auto_unmute:
             await self.set_mic(True)
-        await self.mic.play(path, volume)
+        return await self.mic.play(path, volume)
+
+    async def play_wait(self, path: Path, volume: float = 1.0) -> None:
+        """Joue un son et attend la fin de la lecture. Lève RuntimeError si la lecture a échoué."""
+        task = await self.play(path, volume)
+        await asyncio.wait({task})  # une annulation de l'appelant n'annule pas la lecture : on l'arrête explicitement
+        if not task.cancelled() and task.result() is False:
+            raise RuntimeError("lecture en échec (fichier illisible ?)")
 
     def stop_sounds(self) -> None:
         self.mic.stop()

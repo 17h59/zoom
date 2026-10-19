@@ -1,14 +1,16 @@
 # zoombots : documentation technique
 
-Bots pilotables pour le client web Zoom : un Chromium (Playwright) par bot, un micro virtuel PulseAudio par bot, un soundboard, une API HTTP, un dashboard et une CLI.
+Bots pilotables pour le client web Zoom : un Chromium (Playwright) par bot, un micro virtuel PulseAudio par bot, un soundboard, une API HTTP, un GUI web multi-utilisateurs, un dashboard d'administration et une CLI.
 
 ## Vue d'ensemble
 
 Un « bot » est un Chromium qui charge le client web Zoom, associé à un micro virtuel PulseAudio dédié. L'audio d'un fichier est décodé par ffmpeg et injecté dans le micro virtuel, que le navigateur utilise comme périphérique d'entrée.
 
 ```
-CLI `zoombots` ──HTTP──►  API FastAPI + dashboard
-                              │
+Navigateurs ──HTTP+WebSocket──►  GUI (/)  ──►  SessionManager ── Session (1 par onglet)
+CLI `zoombots` ──HTTP──►  API admin + dashboard (/admin)           │  sons, actions, bots
+                              │                                    │
+                              └──────────────┬─────────────────────┘
                          BotManager ── Playwright (un driver partagé)
                               │          ├─ persistance (state.json, 0600)
                               │          └─ sémaphore de connexions
@@ -47,9 +49,55 @@ La CLI ignore `http_proxy` pour parler à l'API, envoie l'en-tête `X-Zoombots` 
 | `zoombots/state.py` | Persistance JSON atomique (`fsync`, droits 0600), fichier illisible conservé en `.bak`, entrées validées. |
 | `zoombots/stats.py` | RSS/CPU par bot : un balayage de `/proc` retrouve les process Chromium via `PULSE_SOURCE`. |
 | `zoombots/log.py` | Logs JSON et journal d'événements par bot. |
-| `zoombots/api.py` | API FastAPI, garde de sécurité, service du dashboard. |
+| `zoombots/api.py` | API d'administration FastAPI, garde de sécurité, service du GUI (`/`) et du dashboard (`/admin`). |
+| `zoombots/sessions.py` | Sessions du GUI : bots, sons (uploads, YouTube), actions répétées, présence, expiration. |
+| `zoombots/gui_api.py` | Routes `/api` et WebSocket du GUI. |
 | `zoombots/cli.py` | Interface en ligne de commande. |
-| `zoombots/static/` | Dashboard (`index.html` + `app.js`, sans `innerHTML`). |
+| `zoombots/static/` | GUI (`gui.html`, `gui.css`, `gui.js`) et dashboard d'administration (`index.html`, `app.js`), sans `innerHTML`. |
+
+## GUI web multi-utilisateurs
+
+`/` sert une interface pour déployer et piloter des bots, conçue pour un petit serveur partagé. Chaque visiteur obtient **sa propre session** : à l'arrivée la page est vide, et il ne voit et ne contrôle que ses bots, ses sons et ses actions.
+
+- **Déployer** : une liste de liens ou ID de réunion (un par ligne, `lien | passcode` si besoin) et un nombre de bots, soit *répartis* sur les liens (`split` : 10 bots sur 3 liens donnent 4, 3, 3), soit *par lien* (`each`). Les bots sont nommés `<nom> 1…N`.
+- **Sons** : glisser-déposer de fichiers audio ou vidéo n'importe où sur la page (ou clic pour parcourir) ; ajout depuis un lien **YouTube** (yt-dlp, extraction mp3). Les sons du dossier `sounds/` du serveur sont proposés en plus (« bibliothèque »). Un son se glisse sur un bot pour le jouer une fois.
+- **Action** : jouer un son *N* fois sur tous les bots actifs ou sur une sélection, chaque lecture attendant la fin de la précédente, avec une pause entre les répétitions, un décalage entre les bots et un volume. Une action lancée avant que le bot soit entré dans la réunion démarre dès son admission. Une nouvelle action remplace la précédente du bot ; trois échecs de lecture de suite l'arrêtent en erreur.
+- **Pilotage individuel** : un clic sur un bot ouvre un panneau (statut, historique, capture d'écran en direct, micro on/off, jouer, arrêter l'action, retirer le bot). En haut : « Tout stopper » (actions et sons) et « Quitter tous les bots ».
+- **Fermer l'onglet ferme les bots** : le navigateur garde un WebSocket ouvert (`/api/ws`) qui pousse l'état en direct ; quand il reste fermé plus de `ZOOMBOTS_SESSION_GRACE` secondes (15), la session est détruite (actions annulées, bots retirés, fichiers supprimés). Un rechargement de page dans ce délai reprend la même session (identifiant gardé dans `sessionStorage`) ; un nouvel onglet est une nouvelle session vide. Une session jamais connectée expire au bout de 30 s.
+
+### Isolation et limites
+
+- L'identifiant de session (192 bits aléatoires) est le seul accès à une session, envoyé dans `X-Session` (jamais dans une URL). Chaque bot porte son propriétaire : les routes de session ne voient que les bots de la session ; un son d'une session est inutilisable par une autre. Les bots des sessions ne sont **pas persistés** (ils ne survivent pas à leur onglet) et l'API d'administration ne les touche pas (`broadcast`, `rm --finished`).
+- Quotas : `ZOOMBOTS_MAX_SESSIONS` (20) sessions, `ZOOMBOTS_SESSION_MAX_BOTS` (10) bots actifs par session en plus du plafond global `ZOOMBOTS_MAX_BOTS`, 50 bots par déploiement, 20 liens, `ZOOMBOTS_SESSION_MAX_SOUNDS` (20) sons, `ZOOMBOTS_MAX_UPLOAD_MB` (25) par fichier, `ZOOMBOTS_MAX_SOUND_SECONDS` (900) de durée, 2 téléchargements YouTube simultanés, 1000 répétitions par action.
+- **Contrôle d'accès** : `ZOOMBOTS_ACCESS_CODE` demande un code à l'ouverture d'une session (sans lui, quiconque atteint le serveur peut déployer des bots).
+- **Uploads** : corps de requête lu en flux (`PUT /api/sounds?name=…`, sans dépendance multipart), plafonné en octets, extension dans une liste blanche, nom nettoyé, fichier stocké sous un identifiant généré dans le dossier de la session, validé par `ffprobe` (piste audio présente, durée plafonnée) ; un fichier refusé est supprimé.
+- **YouTube** : seuls `youtube.com`, `www.`, `m.`, `music.youtube.com` et `youtu.be` sont acceptés (pas de SSRF vers un autre hôte via yt-dlp) ; `--no-playlist`, `--ignore-config`, taille et durée plafonnées, délai `ZOOMBOTS_YT_TIMEOUT` (180 s), sortie confinée au dossier de la session.
+- Les dossiers de session sont sous `<data>/sessions/` et vidés à chaque démarrage du serveur.
+
+### API du GUI (`/api`)
+
+| Route | Description |
+|---|---|
+| `GET /api/config` | Limites et présence d'un code d'accès |
+| `POST /api/session` | `{code?}` → `{sid}` ; `DELETE /api/session` détruit la session |
+| `GET /api/state` | Instantané : bots (avec action), sons, bibliothèque, téléchargements |
+| `WS /api/ws` | Premier message `{sid}` ; l'état est poussé à chaque changement ; contrôle de `Host` et d'`Origin` |
+| `POST /api/deploy` | `{links:[{meeting, passcode?}], count, mode: split|each, name, auto_reconnect}` |
+| `DELETE /api/bots[?finished=true]`, `DELETE /api/bots/{id}` | Retirer des bots |
+| `POST /api/bots/{id}/mic` · `GET …/events` · `GET …/screenshot` | Micro, historique, capture |
+| `PUT /api/sounds?name=` · `DELETE /api/sounds/{id}` | Envoyer / supprimer un son |
+| `POST /api/youtube` | `{url}` : téléchargement en arrière-plan |
+| `POST /api/actions` | `{bots?, sound, count, gap, volume, stagger}` (`sound` : id de session ou `lib:<nom>`) |
+| `POST /api/actions/stop` | `{bots?}` : arrête actions et sons |
+
+### Déploiement sur un petit serveur
+
+```
+ZOOMBOTS_HOST=0.0.0.0 ZOOMBOTS_TOKEN=<admin> ZOOMBOTS_ACCESS_CODE=<code> \
+ZOOMBOTS_ALLOWED_HOSTS=zoom.example.com zoombots start
+```
+
+`ZOOMBOTS_TOKEN` protège l'administration (`/admin`, API historique, CLI) ; le GUI `/` et `/api` n'en ont pas besoin. `ZOOMBOTS_ALLOWED_HOSTS` doit contenir le nom de domaine public (protection contre le DNS rebinding). Placer un proxy TLS devant (nginx, Caddy) : sans HTTPS, le code d'accès et l'identifiant de session circulent en clair ; le proxy doit transmettre les WebSockets (`Upgrade`). Compter environ 300 à 500 Mo de RAM par bot : voir `zoombots stats` pour calibrer `ZOOMBOTS_MAX_BOTS` sur la machine.
 
 ## Cycle de vie d'un bot
 
@@ -80,7 +128,8 @@ Le lien fourni détermine l'hôte du client web (`https://<hôte>/wc/join/<id>`)
 
 | Route | Description |
 |---|---|
-| `GET /` | Dashboard |
+| `GET /` | GUI utilisateur |
+| `GET /admin` | Dashboard d'administration (tous les bots) |
 | `GET /health` | Sonde (sans authentification) |
 | `GET /bots` | Liste et statut des bots |
 | `POST /bots` | `{meeting, passcode?, name, count, auto_reconnect}` (1 à 20 bots, nom ≤ 60, passcode ≤ 64). 429 au-delà de `ZOOMBOTS_MAX_BOTS` bots actifs |
@@ -103,7 +152,7 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 
 - **DNS rebinding** : l'en-tête `Host` doit être `localhost`, `127.0.0.1` ou `[::1]` (ou figurer dans `ZOOMBOTS_ALLOWED_HOSTS`), sinon 403.
 - **CSRF** : toute requête qui modifie l'état doit porter l'en-tête `X-Zoombots` (le dashboard et la CLI l'envoient). Un en-tête personnalisé impose un preflight CORS que le serveur ne satisfait jamais ; `Sec-Fetch-Site: cross-site` est aussi refusé.
-- **Jeton** : `ZOOMBOTS_TOKEN` rend `Authorization: Bearer <jeton>` obligatoire (le dashboard : `/?token=<jeton>`, qui pose un cookie `HttpOnly; SameSite=Strict`). Écouter hors loopback (`ZOOMBOTS_HOST`) sans jeton fait échouer le démarrage.
+- **Jeton** : `ZOOMBOTS_TOKEN` rend `Authorization: Bearer <jeton>` obligatoire pour l'administration (le dashboard : `/admin?token=<jeton>`, qui pose un cookie `HttpOnly; SameSite=Strict`). Le GUI (`/`, `/static/`, `/api/`) y échappe : il est protégé par les secrets de session et, au choix, `ZOOMBOTS_ACCESS_CODE`. Écouter hors loopback (`ZOOMBOTS_HOST`) sans jeton fait échouer le démarrage.
 - **XSS** : le dashboard construit le DOM avec `textContent`, sans `innerHTML`, et toutes les réponses portent une CSP (`script-src 'self'`).
 - **Secrets** : `state.json` (passcodes) en 0600 ; passcodes masqués dans erreurs et logs.
 - Limites : le jeton est comparé en temps constant mais circule en clair en HTTP ; pour un accès distant, placer l'API derrière un proxy TLS.
@@ -114,7 +163,15 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 |---|---|---|
 | `ZOOMBOTS_HOST`, `ZOOMBOTS_PORT` | `127.0.0.1`, `8000` | Écoute (hors loopback : jeton obligatoire) |
 | `ZOOMBOTS_URL` | dérivée | URL de l'API pour la CLI |
-| `ZOOMBOTS_TOKEN` | aucun | Jeton d'accès |
+| `ZOOMBOTS_TOKEN` | aucun | Jeton d'administration (`/admin`, API historique, CLI) |
+| `ZOOMBOTS_ACCESS_CODE` | aucun | Code demandé pour ouvrir une session du GUI |
+| `ZOOMBOTS_MAX_SESSIONS` | `20` | Sessions GUI simultanées |
+| `ZOOMBOTS_SESSION_MAX_BOTS` | `10` | Bots actifs par session |
+| `ZOOMBOTS_SESSION_GRACE` | `15` | Délai (s) avant destruction d'une session déconnectée |
+| `ZOOMBOTS_SESSION_MAX_SOUNDS` | `20` | Sons par session |
+| `ZOOMBOTS_MAX_UPLOAD_MB` | `25` | Taille maximale d'un son |
+| `ZOOMBOTS_MAX_SOUND_SECONDS` | `900` | Durée maximale d'un son |
+| `ZOOMBOTS_YT_TIMEOUT` | `180` | Délai d'un téléchargement YouTube (s) |
 | `ZOOMBOTS_ALLOWED_HOSTS` | aucun | Hôtes supplémentaires acceptés dans `Host` |
 | `ZOOMBOTS_SOUNDS` | `./sounds` | Dossier des sons |
 | `ZOOMBOTS_DATA` | `~/.local/state/zoombots` | État, captures, pidfile, logs (chemin absolu) |
@@ -137,9 +194,10 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 
 ## État de validation
 
-- **Testé automatiquement** (`pip install -e .[dev] && pytest`, 92 tests) : parsing et domaines, classification (y compris faux positifs de chat), reconnexion et bornage, libération du sémaphore, annulation sans fuite, persistance (cycle `start → shutdown → start` réel), validation des entrées, sécurité de l'API (Host, CSRF, jeton, CSP), pipeline audio (avec un `paplay` factice), rollback PulseAudio, nettoyage des orphelins, CLI. Tests d'intégration sur **vrai Chromium** avec de fausses pages Zoom : chat contenant « I refuse », dialogue d'expulsion, salle d'attente, surveillance, basculement du micro.
+- **Testé automatiquement** (`pip install -e .[dev] && pytest`, 131 tests) : parsing et domaines, classification (y compris faux positifs de chat), reconnexion et bornage, libération du sémaphore, annulation sans fuite, persistance (cycle `start → shutdown → start` réel), validation des entrées, sécurité de l'API (Host, CSRF, jeton, CSP), pipeline audio (avec un `paplay` factice), rollback PulseAudio, nettoyage des orphelins, CLI. Sessions du GUI : répartition des bots, isolation entre utilisateurs, quotas, actions répétées (séquence, attente d'admission, arrêt, remplacement, échecs), uploads (formats, taille, durée, fichier corrompu), YouTube (avec un faux yt-dlp), expiration et destruction sur fermeture du WebSocket, API HTTP et WebSocket (code d'accès, `Host`, `Origin`, CSRF). Un test pilote le **vrai GUI dans Chromium** contre un vrai serveur uvicorn avec de faux bots : déploiement, envoi d'un son, action, panneau d'un bot, glisser-déposer sur un bot, rechargement, second onglet isolé, fermeture de l'onglet qui retire les bots. Tests d'intégration sur **vrai Chromium** avec de fausses pages Zoom : chat contenant « I refuse », dialogue d'expulsion, salle d'attente, surveillance, basculement du micro.
 - **Validé manuellement** : cycle `start → spawn → status → rm → shutdown` de la CLI contre un vrai serveur (échec de lancement de Chromium compris : reconnexion, passage en `error`, aucun module PulseAudio résiduel).
 - **Non validé** : le parcours de connexion sur le vrai client web Zoom. Les sélecteurs (`#input-for-name`, `#input-for-pwd`, boutons Join/Audio/Leave, `aria-label` du micro) et les textes de détection d'état sont des hypothèses, faute d'accès à une réunion. À vérifier avec `zoombots screenshot` et `zoombots logs`.
+- **Non validé** : le téléchargement YouTube réel (pas d'accès à YouTube dans l'environnement de développement : seul le pipeline autour de yt-dlp est testé, avec un faux yt-dlp ; YouTube change souvent, d'où `pip install -U yt-dlp` à prévoir), la charge de plusieurs utilisateurs simultanés sur de vrais Chromium, le déploiement derrière un proxy TLS.
 - **Non validé** : le contenu audio réellement reçu par Zoom (la capture du micro virtuel était silencieuse dans l'environnement de développement, même pour un `paplay` direct, donc non imputable au code), Chromium avec `PULSE_SOURCE` sur une vraie réunion, le `Dockerfile` et `docker-compose.yml`, `install.sh` hors Debian/Ubuntu, le contournement des domaines Zoom pour les comptes `zoomgov`.
 
 ## Limites connues
@@ -147,5 +205,6 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 - Après un redémarrage, les bots rejoignent la réunion comme de nouveaux participants (mute et lectures en cours non restaurés).
 - Plusieurs zoombots sur un même serveur PulseAudio exigent des `ZOOMBOTS_INSTANCE` distincts (sans instance, deux zoombots se déchargent mutuellement leurs micros au démarrage).
 - Chromium de Playwright : sa version doit correspondre au paquet. Un binaire existant s'utilise via `ZOOMBOTS_CHROMIUM` (sous root, Chromium exige `--no-sandbox`, non ajouté par défaut).
-- Linux uniquement. Hors périmètre : dessin, partage d'écran, réception audio, comptes utilisateurs.
+- Linux uniquement. Hors périmètre : dessin, partage d'écran, réception audio, comptes utilisateurs persistants (les sessions du GUI sont éphémères).
+- La limite d'une session est par onglet : un utilisateur qui ouvre dix onglets obtient dix sessions (borné par `ZOOMBOTS_MAX_SESSIONS` et `ZOOMBOTS_MAX_BOTS`) ; il n'y a pas de limitation par adresse IP.
 - `uvicorn` et `playwright` ne sont pas verrouillés (pas de lockfile).

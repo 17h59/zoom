@@ -15,6 +15,8 @@ def client(monkeypatch):
     monkeypatch.setattr(api.manager, "start", _noop)
     monkeypatch.setattr(api.manager, "shutdown", _noop)
     monkeypatch.setattr(api, "TOKEN", None)
+    monkeypatch.setattr(api.sessions, "start", _noop)
+    monkeypatch.setattr(api.sessions, "stop", _noop)
     with TestClient(api.app, base_url="http://localhost") as c:
         yield c
 
@@ -43,9 +45,12 @@ def test_mutations_need_custom_header_csrf(client):
 
 def test_csp_on_responses(client):
     r = client.get("/")
+    assert "gui.js" in r.text
+    r = client.get("/admin")
     assert "script-src 'self'" in r.headers["content-security-policy"]
     assert "inline" not in r.text.split("<script")[1].split("</script>")[0]
     assert client.get("/static/app.js").status_code == 200
+    assert client.get("/static/gui.js").status_code == 200
 
 
 def test_token_required_when_configured(client, monkeypatch):
@@ -54,7 +59,10 @@ def test_token_required_when_configured(client, monkeypatch):
     assert client.get("/bots", headers={"Authorization": "Bearer nope"}).status_code == 401
     assert client.get("/bots", headers={"Authorization": "Bearer s3cret"}).status_code == 200
     assert client.get("/health").status_code == 200
-    r = client.get("/?token=s3cret", follow_redirects=False)
+    assert client.get("/admin").status_code == 401
+    assert client.get("/").status_code == 200  # le GUI utilisateur n'exige pas le jeton d'administration
+    assert client.get("/api/config").status_code == 200
+    r = client.get("/admin?token=s3cret", follow_redirects=False)
     assert r.status_code == 303 and "httponly" in r.headers["set-cookie"].lower()
     assert client.get("/bots").status_code == 200  # cookie conservé
 

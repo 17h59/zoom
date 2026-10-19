@@ -82,17 +82,21 @@ class BotManager:
         self._dirty = False
         if self._stopping:
             return
-        state.save([b.to_state() for b in self.bots.values() if not b.finished], self._state_path)
+        state.save([b.to_state() for b in self.bots.values() if not b.finished and b.owner is None], self._state_path)
 
     def _register(self, bot: Bot) -> None:
         self.bots[bot.id] = bot
         bot.start(self._pw, self._join_gate)
 
-    def spawn(self, meeting: Meeting, names: list[str], auto_reconnect: bool = True) -> list[Bot]:
+    def bots_of(self, owner: str) -> list[Bot]:
+        return [b for b in list(self.bots.values()) if b.owner == owner]
+
+    def spawn(self, meeting: Meeting, names: list[str], auto_reconnect: bool = True,
+              owner: str | None = None) -> list[Bot]:
         assert self._pw is not None
         if len(self._active()) + len(names) > MAX_BOTS:
             raise OverflowError(f"limite de {MAX_BOTS} bots actifs atteinte (ZOOMBOTS_MAX_BOTS)")
-        bots = [Bot(meeting, n, auto_reconnect=auto_reconnect, on_change=self._persist) for n in names]
+        bots = [Bot(meeting, n, auto_reconnect=auto_reconnect, on_change=self._persist, owner=owner) for n in names]
         for bot in bots:
             self._register(bot)
         self.flush()
@@ -111,8 +115,8 @@ class BotManager:
         self.flush()
 
     def purge_finished(self) -> int:
-        """Retire les bots terminés (ended, denied, error, left) de la liste."""
-        done = [i for i, b in self.bots.items() if b.finished]
+        """Retire les bots d'administration terminés (ended, denied, error, left) ; ceux des sessions GUI sont à leur utilisateur."""
+        done = [i for i, b in self.bots.items() if b.finished and b.owner is None]
         for bot_id in done:
             del self.bots[bot_id]
         self.flush()
@@ -120,7 +124,7 @@ class BotManager:
 
     async def broadcast(self, sound: str, volume: float = 1.0) -> dict:
         path = sound_path(sound)
-        ready = [b for b in self.bots.values() if b.status == "in_meeting"]
+        ready = [b for b in self.bots.values() if b.status == "in_meeting" and b.owner is None]  # pas les bots des sessions GUI
         results = await asyncio.gather(*(b.play(path, volume) for b in ready), return_exceptions=True)
         failed = [{"bot": b.id, "error": str(r)} for b, r in zip(ready, results) if isinstance(r, Exception)]
         return {"played": len(ready) - len(failed), "failed": failed}

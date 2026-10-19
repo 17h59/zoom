@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zoombots</title>
+<link rel="stylesheet" href="/static/gui.css">
+</head>
+<body>
+<header>
+  <h1>zoombots</h1>
+  <span id="conn" class="conn">connexion…</span>
+  <span class="spacer"></span>
+  <button id="stop-all" class="warn" title="Arrête les sons et les actions de tous mes bots">⏹ Tout stopper</button>
+  <button id="leave-all" class="danger" title="Retire tous mes bots de leurs réunions">✕ Quitter tous les bots</button>
+</header>
+
+<div id="gate" class="gate" hidden>
+  <form id="gate-form">
+    <h2>Code d'accès</h2>
+    <input id="gate-code" type="password" autocomplete="off" placeholder="code" autofocus>
+    <button>Entrer</button>
+    <div id="gate-err" class="err"></div>
+  </form>
+</div>
+
+<main>
+  <section class="panel" id="deploy">
+    <h2>1. Déployer des bots</h2>
+    <label>Liens ou ID de réunion (un par ligne, <code>lien | passcode</code> si besoin)
+      <textarea id="links" rows="4" placeholder="https://us02web.zoom.us/j/81234567890?pwd=…&#10;987 6543 2109 | monpasscode"></textarea>
+    </label>
+    <div class="row">
+      <label>Nom <input id="name" value="Bot" maxlength="60"></label>
+      <label>Nombre <input id="count" type="number" min="1" value="3"></label>
+      <label class="inline"><input type="radio" name="mode" value="split" checked> répartis sur les liens</label>
+      <label class="inline"><input type="radio" name="mode" value="each"> par lien</label>
+      <label class="inline"><input id="reconnect" type="checkbox" checked> reconnexion auto</label>
+    </div>
+    <div class="row"><button id="deploy-btn" class="primary">Déployer</button><span id="limits" class="muted"></span></div>
+  </section>
+
+  <section class="panel" id="sounds-panel">
+    <h2>2. Sons</h2>
+    <div id="dropzone" class="dropzone" tabindex="0">Glisse des fichiers audio ou vidéo ici (ou clique pour parcourir)</div>
+    <input id="file-input" type="file" accept="audio/*,video/*,.opus,.flac" multiple hidden>
+    <div class="row">
+      <input id="yt-url" placeholder="https://www.youtube.com/watch?v=…" class="grow">
+      <button id="yt-btn">Ajouter depuis YouTube</button>
+    </div>
+    <div id="sounds" class="chips"></div>
+    <p class="muted">Glisse un son sur un bot pour le jouer une fois.</p>
+  </section>
+
+  <section class="panel" id="action-panel">
+    <h2>3. Action</h2>
+    <div class="row">
+      <label>Son <select id="act-sound"></select></label>
+      <label>Répétitions <input id="act-count" type="number" min="1" value="1"></label>
+      <label>Pause entre (s) <input id="act-gap" type="number" min="0" step="0.5" value="0"></label>
+      <label>Décalage entre bots (s) <input id="act-stagger" type="number" min="0" step="0.5" value="0"></label>
+      <label>Volume <input id="act-volume" type="number" min="0" max="2" step="0.1" value="1"></label>
+    </div>
+    <div class="row">
+      <label class="inline"><input type="radio" name="target" value="all" checked> tous les bots actifs</label>
+      <label class="inline"><input type="radio" name="target" value="selected"> <span id="sel-label">sélection (0)</span></label>
+      <button id="act-btn" class="primary">▶ Lancer</button>
+    </div>
+    <p class="muted">Chaque bot rejoue le son le nombre de fois demandé, chaque lecture attendant la fin de la précédente.</p>
+  </section>
+
+  <section class="panel wide" id="bots-panel">
+    <h2>Mes bots <button id="sel-all" class="small">tout sélectionner</button> <button id="clean" class="small">retirer les terminés</button></h2>
+    <div id="bots" class="cards"></div>
+  </section>
+</main>
+
+<aside id="drawer" class="drawer" hidden>
+  <div class="drawer-head"><h2 id="d-name"></h2><button id="d-close" class="small">✕</button></div>
+  <div id="d-status"></div>
+  <div id="d-link" class="muted"></div>
+  <div id="d-action"></div>
+  <div class="row">
+    <button id="d-mic-on" class="small">🎤 Micro on</button>
+    <button id="d-mic-off" class="small">🔇 Micro off</button>
+    <button id="d-play" class="small">▶ Jouer le son choisi</button>
+    <button id="d-stop" class="small warn">⏹ Arrêter</button>
+    <button id="d-remove" class="small danger">✕ Retirer le bot</button>
+  </div>
+  <img id="d-shot" alt="Capture du bot">
+  <ul id="d-events" class="events"></ul>
+</aside>
+
+<div id="overlay" class="overlay" hidden>Dépose pour ajouter les sons</div>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/gui.js"></script>
+</body>
+</html>

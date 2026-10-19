@@ -9,25 +9,34 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .gui_api import build_router
 from .log import setup_logging
 from .manager import BotManager, list_sounds, sound_path
 from .meeting import parse_meeting
+from .sessions import SessionManager
 
 setup_logging()
 manager = BotManager()
+sessions = SessionManager(manager)
 
 TOKEN = os.environ.get("ZOOMBOTS_TOKEN") or None
 ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1", *filter(None, os.environ.get("ZOOMBOTS_ALLOWED_HOSTS", "").split(","))}
 CSRF_HEADER = "x-zoombots"  # un en-tête personnalisé force un preflight CORS, que le serveur ne satisfait jamais
 
-CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-       "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; "
+       "connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+
+# Chemins du GUI utilisateur : accessibles sans jeton d'administration (les sessions ont leur propre secret).
+PUBLIC_PREFIXES = ("/api/", "/static/")
+PUBLIC_PATHS = {"/", "/health"}
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await manager.start()
+    await sessions.start()
     yield
+    await sessions.stop()  # retire les bots de toutes les sessions avant l'arrêt du serveur
     await manager.shutdown()
 
 
@@ -38,6 +47,10 @@ STATIC = Path(__file__).parent / "static"
 def _hostname(header: str) -> str:
     header = header.strip().lower()
     return header[: header.index("]") + 1] if header.startswith("[") else header.split(":")[0]
+
+
+def host_allowed(header: str) -> bool:
+    return _hostname(header) in ALLOWED_HOSTS
 
 
 def _reject(status: int, detail: str) -> JSONResponse:
@@ -52,15 +65,16 @@ async def guard(request: Request, call_next):
     if request.method not in ("GET", "HEAD"):
         if CSRF_HEADER not in request.headers or request.headers.get("sec-fetch-site") == "cross-site":
             return _reject(403, "en-tête X-Zoombots requis")
-    if TOKEN and request.url.path != "/health":
+    path = request.url.path
+    if TOKEN and not (path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)):
         supplied = request.cookies.get("zb_token") or request.headers.get("authorization", "").removeprefix("Bearer ")
-        if request.url.path == "/" and request.query_params.get("token"):
+        if path == "/admin" and request.query_params.get("token"):
             if secrets.compare_digest(request.query_params["token"], TOKEN):
-                resp = RedirectResponse("/", status_code=303)
+                resp = RedirectResponse("/admin", status_code=303)
                 resp.set_cookie("zb_token", TOKEN, httponly=True, samesite="strict")
                 return resp
         if not supplied or not secrets.compare_digest(supplied, TOKEN):
-            return _reject(401, "jeton requis (Authorization: Bearer, ou /?token=…)")
+            return _reject(401, "jeton requis (Authorization: Bearer, ou /admin?token=…)")
     response = await call_next(request)
     response.headers["Content-Security-Policy"] = CSP
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -68,6 +82,7 @@ async def guard(request: Request, call_next):
     return response
 
 
+app.include_router(build_router(sessions, host_allowed))
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -100,7 +115,13 @@ async def health():
 
 
 @app.get("/")
+async def gui():
+    return FileResponse(STATIC / "gui.html")
+
+
+@app.get("/admin")
 async def dashboard():
+    """Tableau de bord d'administration : tous les bots du serveur (jeton ZOOMBOTS_TOKEN si défini)."""
     return FileResponse(STATIC / "index.html")
 
 

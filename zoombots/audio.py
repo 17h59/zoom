@@ -51,13 +51,16 @@ class _Player:
             except (ProcessLookupError, PermissionError):
                 pass
 
-    async def wait(self, name: str) -> None:
+    async def wait(self, name: str) -> bool:
+        """Attend la fin de la lecture. Renvoie False si ffmpeg ou paplay a échoué (hors arrêt demandé)."""
         err = await self.ffmpeg.stderr.read() if self.ffmpeg.stderr else b""
         await asyncio.gather(self.ffmpeg.wait(), self.paplay.wait())
         if self.ffmpeg.returncode not in (0, -signal.SIGTERM) or self.paplay.returncode not in (0, -signal.SIGTERM):
             logger.warning("lecture en échec", extra={"fields": {
                 "sound": name, "ffmpeg": self.ffmpeg.returncode, "paplay": self.paplay.returncode,
                 "stderr": err.decode(errors="replace")[-300:]}})
+            return False
+        return True
 
 
 class VirtualMic:
@@ -86,7 +89,8 @@ class VirtualMic:
             await self.destroy()  # pas de module à moitié chargé
             raise
 
-    async def play(self, path: Path, volume: float = 1.0) -> None:
+    async def play(self, path: Path, volume: float = 1.0) -> "asyncio.Task[bool]":
+        """Lance la lecture. La tâche renvoyée se termine avec la lecture (True = succès)."""
         if len(self._players) >= MAX_PLAYERS:
             raise RuntimeError(f"trop de lectures simultanées (max {MAX_PLAYERS})")
         # ffmpeg décode tous les formats ; paplay (contrairement à `ffmpeg -f pulse`) vide son buffer en fin de flux.
@@ -115,10 +119,11 @@ class VirtualMic:
         task = asyncio.create_task(self._reap(player, path.name))
         self._tasks.add(task)  # référence forte : sinon la tâche peut être collectée avant la fin
         task.add_done_callback(self._tasks.discard)
+        return task
 
-    async def _reap(self, player: _Player, name: str) -> None:
+    async def _reap(self, player: _Player, name: str) -> bool:
         try:
-            await player.wait(name)
+            return await player.wait(name)
         finally:
             self._players.discard(player)
 

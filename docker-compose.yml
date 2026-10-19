@@ -9,5 +9,8 @@ services:
       # le conteneur écoute sur 0.0.0.0 : un jeton est obligatoire (ZOOMBOTS_TOKEN=... docker compose up)
       ZOOMBOTS_TOKEN: ${ZOOMBOTS_TOKEN:?définir ZOOMBOTS_TOKEN}
       ZOOMBOTS_MAX_BOTS: "10"
+      # GUI public : code d'accès des utilisateurs et nom de domaine servi (derrière un proxy TLS)
+      ZOOMBOTS_ACCESS_CODE: ${ZOOMBOTS_ACCESS_CODE:-}
+      ZOOMBOTS_ALLOWED_HOSTS: ${ZOOMBOTS_ALLOWED_HOSTS:-}
 volumes:
   zoombots-data:
