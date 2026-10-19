@@ -1,0 +1,25 @@
+services:
+  zoombots:
+    build: .
+    init: true      # PID 1 récolte les processus orphelins de Chromium (sinon des zombies s'accumulent)
+    restart: unless-stopped
+    ports: ["127.0.0.1:8000:8000"]
+    shm_size: 2gb   # Chromium plante avec le /dev/shm par défaut de 64 Mo
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: ${ZOOMBOTS_MEM_LIMIT:-8g}   # 20 Chromium pourraient sinon épuiser la mémoire de l'hôte
+    volumes: ["./sounds:/sounds:ro", "zoombots-data:/data"]
+    environment:
+      # le conteneur écoute sur 0.0.0.0 : jeton d'administration et code d'accès sont obligatoires
+      ZOOMBOTS_TOKEN: ${ZOOMBOTS_TOKEN:?définir ZOOMBOTS_TOKEN (jeton d'administration)}
+      ZOOMBOTS_ACCESS_CODE: ${ZOOMBOTS_ACCESS_CODE:?définir ZOOMBOTS_ACCESS_CODE (code demandé aux utilisateurs, 8 caractères ou plus)}
+      ZOOMBOTS_MAX_BOTS: "10"
+      # nom de domaine servi par le proxy HTTPS placé devant (`*` : tous les noms)
+      ZOOMBOTS_ALLOWED_HOSTS: ${ZOOMBOTS_ALLOWED_HOSTS:-*}
+      ZOOMBOTS_PUBLIC_ONLY: "1"
+      # Docker place le proxy de l'hôte derrière une passerelle : sans cela tous les utilisateurs comptent comme une IP.
+      # Réseaux Docker par défaut ; à resserrer à l'adresse exacte de la passerelle si possible.
+      ZOOMBOTS_TRUSTED_PROXIES: ${ZOOMBOTS_TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12}
+      ZOOMBOTS_PROXY: ${ZOOMBOTS_PROXY:-}
+      ZOOMBOTS_REQUIRE_PROXY: ${ZOOMBOTS_REQUIRE_PROXY:-0}
+volumes:
+  zoombots-data:

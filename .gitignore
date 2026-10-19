@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 sounds/*
 !sounds/.gitkeep
+.zoombots/
+.pytest_cache/

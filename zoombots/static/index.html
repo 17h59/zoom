@@ -11,7 +11,9 @@
   button { cursor: pointer; } button:hover { background: #2a2a2a; }
   .bot { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid #222; flex-wrap: wrap; }
   .bot b { min-width: 120px; } .status { font-size: 12px; opacity: .8; min-width: 90px; }
-  .err { color: #f87171; font-size: 12px; }
+  .waiting_room, .reconnecting { color: #fbbf24; } .in_meeting { color: #4ade80; } .denied, .error, .ended { color: #f87171; }
+  .err { color: #f87171; font-size: 12px; width: 100%; }
+  #stats { font-size: 12px; opacity: .7; margin-bottom: 8px; } a { color: #93c5fd; }
   #sounds button { margin: 2px; }
 </style>
 </head>
@@ -23,44 +25,15 @@
   <input id="passcode" placeholder="passcode (optionnel)" size="16">
   <input id="name" placeholder="nom" value="Bot" size="10">
   <input id="count" type="number" min="1" max="20" value="1" style="width:60px">
-  <button onclick="spawn()">Lancer</button>
+  <label><input id="reconnect" type="checkbox" checked> reconnexion auto</label>
+  <button id="spawn">Lancer</button>
 </fieldset>
 
-<fieldset><legend>Soundboard (tous les bots)</legend>
-  <div id="sounds"></div>
-</fieldset>
+<div id="stats"></div>
 
-<fieldset><legend>Bots</legend><div id="bots"></div></fieldset>
+<fieldset><legend>Soundboard (tous les bots)</legend><div id="sounds"></div></fieldset>
+<fieldset><legend>Bots <button id="purge" title="Retirer les bots terminés">Nettoyer</button></legend><div id="bots"></div></fieldset>
 
-<script>
-const $ = id => document.getElementById(id);
-const api = (path, method = 'GET', body) =>
-  fetch(path, { method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) })
-    .then(async r => { if (!r.ok) alert((await r.json()).detail); return r.json(); });
-
-async function spawn() {
-  await api('/bots', 'POST', { meeting: $('meeting').value, passcode: $('passcode').value || null,
-    name: $('name').value || 'Bot', count: +$('count').value });
-  refresh();
-}
-
-async function refresh() {
-  const [bots, sounds] = await Promise.all([api('/bots'), api('/sounds')]);
-  $('sounds').innerHTML = sounds.length
-    ? sounds.map(s => `<button onclick="api('/broadcast/sounds/${encodeURIComponent(s)}','POST')">${s}</button>`).join('')
-    : '<i>Dépose des fichiers audio dans le dossier sounds/</i>';
-  $('bots').innerHTML = bots.map(b => `
-    <div class="bot">
-      <b>${b.name}</b><span class="status">${b.status}</span>
-      <button onclick="api('/bots/${b.id}/mic','POST',{on:true})">🎤</button>
-      <button onclick="api('/bots/${b.id}/mic','POST',{on:false})">🔇</button>
-      <button onclick="api('/bots/${b.id}/stop','POST')">⏹</button>
-      ${sounds.map(s => `<button onclick="api('/bots/${b.id}/sounds/${encodeURIComponent(s)}','POST')">${s}</button>`).join('')}
-      <button onclick="api('/bots/${b.id}','DELETE').then(refresh)">Quitter</button>
-      ${b.error ? `<div class="err">${b.error}</div>` : ''}
-    </div>`).join('') || '<i>Aucun bot</i>';
-}
-refresh(); setInterval(refresh, 3000);
-</script>
+<script src="/static/app.js"></script>
 </body>
 </html>
