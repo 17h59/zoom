@@ -301,7 +301,7 @@ FAKE_YTDLP = textwrap.dedent('''
         sys.stderr.write("ERROR: Video unavailable\\n"); sys.exit(1)
     out = args[args.index("-o") + 1].replace("%(ext)s", "mp3")
     subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=0.3", "-f", "wav", out], check=True)
-    print("Ma vidéo\\t" + out)
+    print("Ma vidéo\\x1f" + out)
 ''')
 
 

@@ -9,6 +9,8 @@ import signal
 import subprocess
 from pathlib import Path
 
+from . import net
+
 logger = logging.getLogger("zoombots.audio")
 
 MAX_PLAYERS = 4  # lectures simultanées par bot
@@ -24,11 +26,19 @@ ORPHAN = re.compile(rf"(?:sink_name|source_name)={NAME}(?:_mic)?(?:\s|$)")
 OWN_SOURCE = re.compile(rf"{NAME}_mic")
 
 
+PACTL_TIMEOUT_S = 15
+
+
 async def _run(*args: str) -> str:
     proc = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=net.clean_env()
     )
-    out, err = await proc.communicate()
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), PACTL_TIMEOUT_S)  # un pactl figé ne bloque pas un nettoyage
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"{args[0]} ne répond pas") from None
     if proc.returncode != 0:
         raise RuntimeError(f"{args[0]} a échoué: {err.decode().strip()}")
     return out.decode().strip()
@@ -39,12 +49,14 @@ class _Player:
 
     def __init__(self, ffmpeg: asyncio.subprocess.Process, paplay: asyncio.subprocess.Process):
         self.ffmpeg, self.paplay = ffmpeg, paplay
+        self.stopped = False  # arrêt demandé (stop, nettoyage, reconnexion) : la lecture n'est pas allée au bout
 
     @property
     def running(self) -> bool:
         return self.ffmpeg.returncode is None or self.paplay.returncode is None
 
     def kill(self) -> None:
+        self.stopped = True
         for proc in (self.ffmpeg, self.paplay):
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -52,9 +64,11 @@ class _Player:
                 pass
 
     async def wait(self, name: str) -> bool:
-        """Attend la fin de la lecture. Renvoie False si ffmpeg ou paplay a échoué (hors arrêt demandé)."""
+        """Attend la fin de la lecture. Renvoie False si elle a échoué ou a été interrompue (arrêt demandé)."""
         err = await self.ffmpeg.stderr.read() if self.ffmpeg.stderr else b""
         await asyncio.gather(self.ffmpeg.wait(), self.paplay.wait())
+        if self.stopped:
+            return False
         if self.ffmpeg.returncode not in (0, -signal.SIGTERM) or self.paplay.returncode not in (0, -signal.SIGTERM):
             logger.warning("lecture en échec", extra={"fields": {
                 "sound": name, "ffmpeg": self.ffmpeg.returncode, "paplay": self.paplay.returncode,
@@ -98,14 +112,14 @@ class VirtualMic:
         ffmpeg = paplay = None
         try:
             ffmpeg = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(path),
+                "ffmpeg", "-nostdin", "-loglevel", "error", "-protocol_whitelist", "file", "-i", str(path),
                 "-af", f"volume={float(volume):.3f}", "-f", "wav", "-",
-                stdout=write_fd, stderr=asyncio.subprocess.PIPE, start_new_session=True,
+                stdout=write_fd, stderr=asyncio.subprocess.PIPE, start_new_session=True, env=net.clean_env(),
             )
             paplay = await asyncio.create_subprocess_exec(
                 "paplay", f"--device={self.sink}", "--client-name=zoombots",
                 stdin=read_fd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
+                start_new_session=True, env=net.clean_env(),
             )
         except BaseException:
             if ffmpeg and ffmpeg.returncode is None:

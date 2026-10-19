@@ -1,12 +1,13 @@
 import asyncio
 import os
+import shutil
 from pathlib import Path
 
 from playwright.async_api import Playwright, async_playwright
 
 from . import state, stats
 from .audio import cleanup_orphans
-from .bot import Bot
+from .bot import SCREENSHOT_DIR, Bot
 from .meeting import Meeting, normalize_host
 
 SOUNDS_DIR = Path(os.environ.get("ZOOMBOTS_SOUNDS", Path(__file__).parent.parent / "sounds"))
@@ -40,11 +41,13 @@ class BotManager:
         self._state_path = state_path or state.STATE_FILE
         self._stopping = False
         self._dirty = False
+        self._saved: list | None = None
 
     async def start(self) -> None:
         self._pw_cm = async_playwright()
         self._pw = await self._pw_cm.__aenter__()
         await cleanup_orphans()  # micros laissés par un process tué brutalement
+        shutil.rmtree(SCREENSHOT_DIR, ignore_errors=True)  # captures d'erreur d'une exécution précédente
         for entry in state.load(self._state_path):
             if len(self._active()) >= MAX_BOTS or entry["id"] in self.bots:
                 continue
@@ -68,6 +71,9 @@ class BotManager:
     def _active(self) -> list[Bot]:
         return [b for b in self.bots.values() if not b.finished]
 
+    def capacity_left(self) -> int:
+        return max(0, MAX_BOTS - len(self._active()))
+
     def _persist(self) -> None:
         """Planifie une écriture groupée : plusieurs changements dans le même tour de boucle = un seul fichier."""
         if self._stopping or self._dirty:
@@ -82,7 +88,10 @@ class BotManager:
         self._dirty = False
         if self._stopping:
             return
-        state.save([b.to_state() for b in self.bots.values() if not b.finished and b.owner is None], self._state_path)
+        entries = [b.to_state() for b in self.bots.values() if not b.finished and b.owner is None]
+        if entries != self._saved:  # pas de fsync pour les changements qui ne touchent que des bots de session
+            state.save(entries, self._state_path)
+            self._saved = entries
 
     def _register(self, bot: Bot) -> None:
         self.bots[bot.id] = bot

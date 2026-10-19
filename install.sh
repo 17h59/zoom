@@ -18,7 +18,7 @@ SERVER=""   # "" : demander si le terminal est interactif ; 1 : installer ; 0 : 
 usage() {
   cat <<'USAGE'
 Usage : ./install.sh [--server] [--no-system-deps] [--no-browser]
-  --server          installe aussi Caddy (HTTPS automatique) pour un serveur public avec nom de domaine
+  --server          installe aussi Caddy (HTTPS automatique) pour un serveur partagé avec nom de domaine
   --no-system-deps  n'installe aucun paquet système (python3 >= 3.11, ffmpeg, pulseaudio-utils, xvfb)
   --no-browser      ne télécharge pas Chromium
 USAGE
@@ -47,7 +47,7 @@ if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]
   TARGET_USER="$SUDO_USER"
   RUN_AS=(sudo -u "$SUDO_USER" -H)
 fi
-TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6 || true)"
 [ -n "$TARGET_HOME" ] || TARGET_HOME="$HOME"
 as_user() { "${RUN_AS[@]+"${RUN_AS[@]}"}" "$@"; }
 
@@ -93,7 +93,7 @@ install_system_deps() {
 
   say "installation des dépendances système : ${need[*]:-} $([ "$want_xvfb" -eq 1 ] && echo xvfb)"
   if command -v apt-get >/dev/null; then
-    as_root apt-get update -qq
+    as_root apt-get update -qq || die "apt-get update a échoué (dépôt cassé ?) : corriger puis relancer, ou installer à la main et utiliser --no-system-deps"
     local pk=()
     for n in "${need[@]+"${need[@]}"}"; do
       case "$n" in
@@ -149,6 +149,10 @@ have_venv "$PYTHON" || die "le module venv de $PYTHON est manquant (paquet pytho
 
 VENV="$ROOT/.venv"
 say "environnement Python ($VENV, $("$PYTHON" -V 2>&1))"
+if [ -x "$VENV/bin/python" ] && ! "$VENV/bin/python" -c 'import sys' >/dev/null 2>&1; then
+  warn ".venv cassé (Python déplacé ou supprimé) : recréation"
+  rm -rf "$VENV"
+fi
 [ -x "$VENV/bin/python" ] || as_user "$PYTHON" -m venv "$VENV"
 as_user "$VENV/bin/python" -m pip install -q -e "$ROOT"
 
@@ -188,9 +192,10 @@ install_caddy() {
   else
     command -v curl >/dev/null || die "curl est requis pour télécharger Caddy"
     local arch
-    case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; armv7l) arch=armv7 ;; *) die "architecture non gérée pour Caddy : $(uname -m)" ;; esac
+    case "$(uname -m)" in x86_64|amd64) arch="amd64" ;; aarch64|arm64) arch="arm64" ;; armv7l) arch="arm&arm=7" ;; *) die "architecture non gérée pour Caddy : $(uname -m)" ;; esac
     say "téléchargement de Caddy ($arch)"
-    as_user curl -fsSL "https://caddyserver.com/api/download?os=linux&arch=$arch" -o "$caddy.tmp" || die "téléchargement de Caddy impossible"
+    as_user curl --proto '=https' --tlsv1.2 -fsSL "https://caddyserver.com/api/download?os=linux&arch=$arch" -o "$caddy.tmp" \
+      || { rm -f "$caddy.tmp"; die "téléchargement de Caddy impossible"; }
     as_user chmod +x "$caddy.tmp"
     as_user "$caddy.tmp" version >/dev/null || { rm -f "$caddy.tmp"; die "le binaire Caddy téléchargé ne fonctionne pas"; }
     as_user mv "$caddy.tmp" "$caddy"

@@ -10,12 +10,13 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY zoombots ./zoombots
 RUN pip install --no-cache-dir "playwright==${PLAYWRIGHT_VERSION}" .
-# Exécution sans root : Chromium garde son sandbox, PulseAudio tourne en mode utilisateur.
+# Exécution sans root, PulseAudio en mode utilisateur. Le sandbox de Chromium demande des espaces de noms
+# utilisateur ; dans un conteneur il est désactivé (ZOOMBOTS_SANDBOX=0) et l'isolation est celle du conteneur.
 USER pwuser
-ENV ZOOMBOTS_HOST=0.0.0.0 ZOOMBOTS_DATA=/data ZOOMBOTS_SOUNDS=/sounds XDG_RUNTIME_DIR=/tmp/runtime
+ENV ZOOMBOTS_SANDBOX=0 ZOOMBOTS_HOST=0.0.0.0 ZOOMBOTS_DATA=/data ZOOMBOTS_SOUNDS=/sounds XDG_RUNTIME_DIR=/tmp/runtime
 VOLUME ["/data", "/sounds"]
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+  CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('ZOOMBOTS_PORT', '8000'), timeout=3)"
 # Un seul conteneur héberge le serveur PulseAudio et tous les bots : pas de coût d'un conteneur par bot.
 CMD ["sh", "-c", "pulseaudio --start --exit-idle-time=-1 && exec python -m zoombots"]

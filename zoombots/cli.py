@@ -13,12 +13,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import deploy
+from . import deploy, net
 from .log import DATA_DIR
 
 HOST = os.environ.get("ZOOMBOTS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ZOOMBOTS_PORT", "8000"))
-BASE = os.environ.get("ZOOMBOTS_URL") or f"http://{'127.0.0.1' if HOST == '0.0.0.0' else HOST}:{PORT}"
+BASE = os.environ.get("ZOOMBOTS_URL") or f"http://{'127.0.0.1' if HOST == '0.0.0.0' else ('[%s]' % HOST if ':' in HOST else HOST)}:{PORT}"
 PID_FILE = Path(DATA_DIR) / "server.pid"
 LOG_FILE = Path(DATA_DIR) / "server.log"
 RUN_FILE = Path(DATA_DIR) / "run.json"  # mode, hôte et port du serveur lancé par la CLI
@@ -89,12 +89,30 @@ def table(rows: list[dict], cols: list[str]) -> None:
 
 # -- gestion du serveur -------------------------------------------------------
 
+def _private_dir() -> None:
+    """Dossier de données en 0700 (journaux, captures, jeton local)."""
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(PID_FILE.parent, 0o700)
+    except OSError:
+        pass
+
+
+def _write_private(path: Path, text: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    os.chmod(path, 0o600)
+
+
 def _is_ours(pid: int) -> bool:
     """Vrai si le PID est bien un serveur zoombots (un PID recyclé ne doit jamais être signalé)."""
     try:
-        return b"zoombots" in Path(f"/proc/{pid}/cmdline").read_bytes()
+        args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
     except OSError:
         return False
+    # `python -m zoombots`, ou l'exécutable `…/zoombots` : pas un éditeur ouvert sur zoombots/cli.py
+    return b"zoombots" in args or any(a.endswith(b"/zoombots") for a in args)
 
 
 def _pid() -> int | None:
@@ -138,8 +156,9 @@ def cmd_serve(args) -> int:
     ensure_pulseaudio()
     if _pid():
         raise CliError(f"déjà lancé (pid {_pid()})")
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(str(os.getpid()))
+    _private_dir()
+    RUN_FILE.unlink(missing_ok=True)  # `serve` ne fournit pas run.json : ne pas garder celui d'un lancement précédent
+    _write_private(PID_FILE, str(os.getpid()))
     try:
         from .__main__ import main as serve
 
@@ -155,7 +174,7 @@ def _start_server(host: str, port: int, extra_env: dict[str, str], headed: bool 
     if _pid():
         raise CliError(f"déjà lancé (pid {_pid()}) : `zoombots shutdown` pour l'arrêter")
     ensure_pulseaudio()
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _private_dir()
     _rotate_log()
     cmd = [sys.executable, "-m", "zoombots"]
     if headed:
@@ -164,24 +183,53 @@ def _start_server(host: str, port: int, extra_env: dict[str, str], headed: bool 
         cmd = ["xvfb-run", "-a", *cmd]
     env = {**os.environ, "ZOOMBOTS_HEADED": "1" if headed else os.environ.get("ZOOMBOTS_HEADED", ""), **extra_env,
            "ZOOMBOTS_HOST": host, "ZOOMBOTS_PORT": str(port)}
-    with open(LOG_FILE, "ab") as log:
-        proc = subprocess.Popen(cmd, stdout=log, stderr=log, start_new_session=True, env=env)
-    PID_FILE.write_text(str(proc.pid))
-    RUN_FILE.write_text(json.dumps({"mode": extra_env.get("ZOOMBOTS_MODE", "admin"), "host": host, "port": port}))
-    BASE = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}"
-    TOKEN = extra_env.get("ZOOMBOTS_TOKEN") or TOKEN
+    log_fd = os.open(LOG_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        proc = subprocess.Popen(cmd, stdout=log_fd, stderr=log_fd, start_new_session=True, env=env)
+    finally:
+        os.close(log_fd)
+    _write_private(PID_FILE, str(proc.pid))
+    base = f"http://{_url_host(host)}:{port}"
     for _ in range(60):
         if proc.poll() is not None:
             PID_FILE.unlink(missing_ok=True)
-            raise CliError(f"le serveur s'est arrêté au démarrage, voir {LOG_FILE}")
+            raise CliError(f"le serveur s'est arrêté au démarrage (port {port} déjà pris ?), voir {LOG_FILE}")
         try:
-            call("GET", "/health")
-            return proc.pid
+            _probe(base)
+            break
         except CliError as exc:
             if "serveur injoignable" not in str(exc):
                 raise
             time.sleep(0.5)
-    raise CliError(f"le serveur ne répond pas, voir {LOG_FILE}")
+    else:
+        raise CliError(f"le serveur ne répond pas, voir {LOG_FILE}")
+    if proc.poll() is not None:  # un autre service occupait le port et a répondu à notre place
+        PID_FILE.unlink(missing_ok=True)
+        raise CliError(f"le port {port} est déjà utilisé par un autre service, voir {LOG_FILE}")
+    token = extra_env.get("ZOOMBOTS_TOKEN") or None
+    info = {"mode": extra_env.get("ZOOMBOTS_MODE", "admin"), "host": host, "port": port}
+    if token and info["mode"] == "local":
+        info["token"] = token  # relu par la CLI (fichier 0600) ; en mode serveur, le jeton est dans server.json
+    _write_private(RUN_FILE, json.dumps(info))
+    BASE, TOKEN = base, token or TOKEN
+    return proc.pid
+
+
+def _url_host(host: str) -> str:
+    if host == "0.0.0.0":
+        return "127.0.0.1"
+    return f"[{host}]" if ":" in host else host
+
+
+def _probe(base: str) -> None:
+    """Le serveur répond-il ? (sonde publique, sans jeton)"""
+    try:
+        with _OPENER.open(urllib.request.Request(base + "/health"), timeout=5):
+            return
+    except urllib.error.HTTPError:
+        return  # il répond, même si c'est par un refus
+    except urllib.error.URLError:
+        raise CliError(f"serveur injoignable sur {base}") from None
 
 
 def cmd_start(args) -> int:
@@ -203,13 +251,23 @@ def _open_browser(url: str) -> None:
 
 def cmd_gui(args) -> int:
     """Interface web sur cette machine : rien n'est exposé sur Internet, aucun nom de domaine requis."""
-    port = args.port or PORT
-    url = f"http://127.0.0.1:{port}/"
     info = _run_info()
     if _pid() and info.get("mode") == "local":
-        print(f"L'interface tourne déjà : {url}")
+        port = info.get("port", PORT)
+        if (args.port and args.port != port) or args.proxy:
+            print("L'interface tourne déjà : `zoombots shutdown` d'abord pour changer de port ou de proxy.", file=sys.stderr)
+        print(f"L'interface tourne déjà : http://127.0.0.1:{port}/")
+        url = f"http://127.0.0.1:{port}/"
     else:
+        port = args.port or PORT
+        url = f"http://127.0.0.1:{port}/"
         cfg_proxy = args.proxy or os.environ.get("ZOOMBOTS_PROXY")
+        if cfg_proxy:
+            try:
+                for part in cfg_proxy.split(","):
+                    net.parse_proxy(part)
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
         pid = _start_server("127.0.0.1", port, deploy.local_env(port, cfg_proxy), args.headed)
         print(f"Interface locale lancée (pid {pid}) : {url}")
         print("Fermer l'onglet retire ses bots. `zoombots shutdown` arrête tout.")
@@ -221,23 +279,42 @@ def cmd_gui(args) -> int:
 
 
 def _run_info() -> dict:
+    """Mode, hôte et port du serveur lancé par la CLI ; vide si le fichier manque, est invalide ou périmé."""
     try:
-        return json.loads(RUN_FILE.read_text())
+        info = json.loads(RUN_FILE.read_text())
     except (FileNotFoundError, ValueError):
         return {}
+    if not isinstance(info, dict) or not {"host", "port"} <= info.keys() or not _pid():
+        return {}  # serveur arrêté ou planté : ne pas viser un ancien port
+    return info
 
 
 # -- mode serveur public ----------------------------------------------------
+
+def _caddy_pid() -> int | None:
+    try:
+        pid = int(CADDY_PID.read_text())
+        args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    return pid if any(a == b"caddy" or a.endswith(b"/caddy") for a in args) else None
+
 
 def _start_caddy(cfg: dict) -> None:
     caddy = deploy.find_caddy()
     if not caddy:
         raise CliError("Caddy est introuvable (il fournit le HTTPS automatique) : relancer `./install.sh --server`")
-    CADDYFILE.write_text(deploy.caddyfile(cfg))
-    with open(CADDY_LOG, "ab") as log:
+    if _caddy_pid():
+        raise CliError(f"Caddy tourne déjà (pid {_caddy_pid()}) : `zoombots shutdown` d'abord")
+    _private_dir()
+    _write_private(CADDYFILE, deploy.caddyfile(cfg))
+    log_fd = os.open(CADDY_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
         proc = subprocess.Popen([caddy, "run", "--config", str(CADDYFILE), "--adapter", "caddyfile"],
-                                stdout=log, stderr=log, start_new_session=True)
-    CADDY_PID.write_text(str(proc.pid))
+                                stdout=log_fd, stderr=log_fd, start_new_session=True)
+    finally:
+        os.close(log_fd)
+    _write_private(CADDY_PID, str(proc.pid))
     time.sleep(2)
     if proc.poll() is not None:
         CADDY_PID.unlink(missing_ok=True)
@@ -247,23 +324,32 @@ def _start_caddy(cfg: dict) -> None:
 
 
 def _stop_caddy() -> None:
-    try:
-        pid = int(CADDY_PID.read_text())
-        if b"caddy" in Path(f"/proc/{pid}/cmdline").read_bytes():
+    pid = _caddy_pid()
+    if pid:
+        try:
             os.kill(pid, signal.SIGTERM)
-    except (FileNotFoundError, ValueError, OSError):
-        pass
+            for _ in range(20):  # attend la libération des ports 80/443 avant un éventuel redémarrage
+                if not _caddy_pid():
+                    break
+                time.sleep(0.25)
+            else:
+                os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     CADDY_PID.unlink(missing_ok=True)
 
 
 def cmd_server_start(args) -> int:
     """Serveur partagé (plusieurs utilisateurs). Avec --domain : HTTPS automatique via Caddy ; sans : HTTP sur le port."""
+    if _pid():
+        raise CliError(f"déjà lancé (pid {_pid()}) : `zoombots shutdown` d'abord (la configuration n'a pas été modifiée)")
     try:
         cfg = deploy.update_config(deploy.load_config(), domain=args.domain, no_domain=args.no_domain,
-                                   code=args.code, proxy=args.proxy, port=args.port, email=args.email)
+                                   code=args.code, proxy=args.proxy, port=args.port, email=args.email,
+                                   no_proxy=args.no_proxy, reset_secrets=args.reset_secrets)
     except deploy.DeployError as exc:
         raise CliError(str(exc)) from exc
-    deploy.save_config(cfg)
+    _stop_caddy()  # un Caddy résiduel (par exemple d'un lancement avec domaine) ne doit pas survivre à --no-domain
     pid = _start_server("127.0.0.1" if cfg.get("domain") else "0.0.0.0", cfg["port"], deploy.server_env(cfg))
     if cfg.get("domain"):
         try:
@@ -271,6 +357,7 @@ def cmd_server_start(args) -> int:
         except CliError:
             cmd_stop_server(None)
             raise
+    deploy.save_config(cfg)  # écrite seulement si tout a démarré : `server info` ne ment pas
     print(f"Serveur lancé (pid {pid}).")
     _print_server_info(cfg)
     return 0
@@ -335,15 +422,18 @@ def cmd_check_ip(args) -> int:
 
 
 def cmd_stop_server(args) -> int:
-    _stop_caddy()
     pid = _pid()
     if not pid:
+        _stop_caddy()
         PID_FILE.unlink(missing_ok=True)
         RUN_FILE.unlink(missing_ok=True)
         print("serveur non lancé")
         return 0
-    group = os.getpgid(pid)
-    os.killpg(group, signal.SIGTERM) if group == pid else os.kill(pid, signal.SIGTERM)
+    try:
+        group = os.getpgid(pid)
+        os.killpg(group, signal.SIGTERM) if group == pid else os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # il s'est arrêté entre-temps
     for _ in range(60):
         if not _pid():
             break
@@ -364,6 +454,7 @@ def cmd_stop_server(args) -> int:
                     pass
 
         asyncio.run(cleanup_orphans())
+    _stop_caddy()  # après l'application : pas de fenêtre où Caddy répondrait 502 pendant l'arrêt des bots
     PID_FILE.unlink(missing_ok=True)
     RUN_FILE.unlink(missing_ok=True)
     print("serveur arrêté")
@@ -381,7 +472,7 @@ def cmd_status(args) -> int:
         bots, running = [], False
     print(f"serveur : {'lancé' + (' (pid %d)' % pid if pid else '') if running else 'arrêté'}  {BASE}")
     if running:
-        table(bots, ["id", "name", "meeting", "status", "reconnects", "error"])
+        table(bots, ["id", "name", "meeting", "status", "reconnects", "owner", "error"])
     return 0
 
 
@@ -424,7 +515,7 @@ def cmd_list(args) -> int:
     if args.json:
         print(json.dumps(bots, indent=2))
     else:
-        table(bots, ["id", "name", "meeting", "status", "reconnects", "error"])
+        table(bots, ["id", "name", "meeting", "status", "reconnects", "owner", "error"])
     return 0
 
 
@@ -522,6 +613,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-domain", action="store_true", help="oublie le domaine configuré (HTTP direct)")
     sp.add_argument("--code", help="code d'accès des utilisateurs (généré sinon)")
     sp.add_argument("--proxy", help="proxy(s) de sortie des bots, séparés par des virgules")
+    sp.add_argument("--no-proxy", action="store_true", help="oublie le proxy configuré (les bots sortent par l'IP du serveur)")
+    sp.add_argument("--reset-secrets", action="store_true", help="génère un nouveau code d'accès et un nouveau jeton")
     sp.add_argument("--port", type=int, help="port de l'application (défaut 8000)")
     sp.add_argument("--email", help="e-mail pour Let's Encrypt (avis d'expiration)")
     sp = ssub.add_parser("dns", help="affiche l'enregistrement DNS à créer et vérifie qu'il est en place")
@@ -578,9 +671,12 @@ def _adopt_running_server() -> None:
     global BASE, TOKEN
     info = _run_info()
     if info and not os.environ.get("ZOOMBOTS_URL"):
-        BASE = f"http://{'127.0.0.1' if info['host'] == '0.0.0.0' else info['host']}:{info['port']}"
-    if info.get("mode") == "server" and not os.environ.get("ZOOMBOTS_TOKEN"):
-        TOKEN = deploy.load_config().get("token")
+        BASE = f"http://{_url_host(info['host'])}:{info['port']}"
+    if not os.environ.get("ZOOMBOTS_TOKEN"):
+        if info.get("mode") == "server":
+            TOKEN = deploy.load_config().get("token")
+        elif info.get("token"):
+            TOKEN = info["token"]
 
 
 def main(argv: list[str] | None = None) -> int:

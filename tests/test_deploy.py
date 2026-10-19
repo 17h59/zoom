@@ -53,13 +53,14 @@ def test_server_env_with_domain_listens_on_loopback_only():
 def test_server_env_without_domain_works_by_ip():
     env = deploy.server_env(deploy.update_config({}))
     assert env["ZOOMBOTS_HOST"] == "0.0.0.0" and env["ZOOMBOTS_ALLOWED_HOSTS"] == "*"
-    assert env["ZOOMBOTS_TOKEN"] and env["ZOOMBOTS_ACCESS_CODE"] and "ZOOMBOTS_PROXY" not in env
+    assert env["ZOOMBOTS_TOKEN"] and env["ZOOMBOTS_ACCESS_CODE"]
+    assert env["ZOOMBOTS_PROXY"] == "" and env["ZOOMBOTS_REQUIRE_PROXY"] == "0"  # jamais hérité du shell
 
 
 def test_local_env():
     env = deploy.local_env(8123, None)
     assert env["ZOOMBOTS_MODE"] == "local" and env["ZOOMBOTS_HOST"] == "127.0.0.1" and env["ZOOMBOTS_PORT"] == "8123"
-    assert "ZOOMBOTS_ACCESS_CODE" not in env and "ZOOMBOTS_PROXY" not in env
+    assert "ZOOMBOTS_ACCESS_CODE" not in env and env["ZOOMBOTS_PROXY"] == "" and len(env["ZOOMBOTS_TOKEN"]) >= 24
     assert deploy.local_env(8000, "http://p:1")["ZOOMBOTS_REQUIRE_PROXY"] == "1"
 
 
@@ -143,11 +144,11 @@ def test_cli_server_start_with_domain(monkeypatch, capsys):
     calls = {}
     monkeypatch.setattr(cli, "_start_server", lambda host, port, env, headed=False: calls.update(host=host, port=port, env=env) or 7)
     monkeypatch.setattr(cli, "_start_caddy", lambda cfg: calls.update(caddy=cfg["domain"]))
-    assert cli.main(["server", "start", "--domain", "bots.example.fr", "--code", "sesame", "--proxy", "http://p.example:1"]) == 0
+    assert cli.main(["server", "start", "--domain", "bots.example.fr", "--code", "sesame-123", "--proxy", "http://p.example:1"]) == 0
     assert calls["host"] == "127.0.0.1" and calls["caddy"] == "bots.example.fr"
-    assert calls["env"]["ZOOMBOTS_ACCESS_CODE"] == "sesame" and calls["env"]["ZOOMBOTS_PUBLIC_ONLY"] == "1"
+    assert calls["env"]["ZOOMBOTS_ACCESS_CODE"] == "sesame-123" and calls["env"]["ZOOMBOTS_PUBLIC_ONLY"] == "1"
     out = capsys.readouterr().out
-    assert "https://bots.example.fr/" in out and "sesame" in out
+    assert "https://bots.example.fr/" in out and "sesame-123" in out
     saved = deploy.load_config()
     assert saved["domain"] == "bots.example.fr" and saved["token"]
     # relancer garde le même code et le même jeton
@@ -185,6 +186,7 @@ def test_cli_adopts_token_and_port_of_running_server(monkeypatch):
     monkeypatch.delenv("ZOOMBOTS_TOKEN", raising=False)
     monkeypatch.delenv("ZOOMBOTS_URL", raising=False)
     monkeypatch.setattr(cli, "TOKEN", None)
+    monkeypatch.setattr(cli, "_pid", lambda: 4242)
     seen = {}
     monkeypatch.setattr(cli, "call", lambda *a, **k: seen.update(base=cli.BASE, token=cli.TOKEN) or [])
     cli.main(["list"])
@@ -219,7 +221,7 @@ def test_public_only_hides_admin_from_the_outside(client, monkeypatch):
     monkeypatch.setattr(api, "TOKEN", "adm")
     outside = {"X-Forwarded-For": "203.0.113.50"}
     # le proxy local (peer 127.0.0.1 / « testclient ») relaie un client extérieur
-    monkeypatch.setattr(net_trusted(), "trusted_proxies", lambda: {"testclient"})
+    monkeypatch.setenv("ZOOMBOTS_TRUSTED_PROXIES", "testclient")
     bearer = {"Authorization": "Bearer adm"}
     assert client.get("/bots", headers={**outside, **bearer}).status_code == 404  # même avec le bon jeton
     assert client.get("/admin", headers=outside).status_code == 404
@@ -241,7 +243,7 @@ def test_any_host_accepted_when_wildcard(client, monkeypatch):
 
 
 def test_sessions_are_counted_per_real_client_ip(client, monkeypatch):
-    monkeypatch.setattr(net_trusted(), "trusted_proxies", lambda: {"testclient"})
+    monkeypatch.setenv("ZOOMBOTS_TRUSTED_PROXIES", "testclient")
     monkeypatch.setattr(S, "IP_MAX_SESSIONS", 1)
     first = {**H, "X-Forwarded-For": "203.0.113.1"}
     assert client.post("/api/session", json={}, headers=first).status_code == 200

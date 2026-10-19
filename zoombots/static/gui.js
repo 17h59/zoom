@@ -5,7 +5,7 @@ const enc = encodeURIComponent;
 const STORE = 'zoombots.sid';
 
 const S = { sid: null, config: null, snap: { bots: [], sounds: [], library: [], jobs: [] },
-            selected: new Set(), open: null, uploads: [], ws: null, ping: null, shotUrl: null };
+            selected: new Set(), open: null, uploads: [], ws: null, ping: null, shotUrl: null, dragging: false };
 
 // -- utilitaires -----------------------------------------------------------
 
@@ -51,6 +51,13 @@ async function api(path, method = 'GET', body, raw) {
   return data;
 }
 
+// Désactive un bouton le temps d'une requête (un double clic ne déploie pas deux fois).
+async function busy(button, fn) {
+  if (button.disabled) return null;
+  button.disabled = true;
+  try { return await fn(); } finally { button.disabled = false; }
+}
+
 // Exécute une action utilisateur en affichant l'erreur éventuelle.
 async function run(fn, okMessage) {
   try { const r = await fn(); if (okMessage) toast(okMessage); return r; }
@@ -62,7 +69,14 @@ const activeBots = () => S.snap.bots.filter(b => !['ended', 'denied', 'error', '
 
 // -- session et connexion --------------------------------------------------
 
-async function newSession(message) {
+let pendingSession = null;
+// Un seul démarrage de session à la fois : le 401 d'une requête et la fermeture 4401 du WebSocket arrivent ensemble.
+function newSession(message) {
+  if (!pendingSession) pendingSession = startSession(message).finally(() => { pendingSession = null; });
+  return pendingSession;
+}
+
+async function startSession(message) {
   S.selected.clear(); S.open = null; closeDrawer();
   sessionStorage.removeItem(STORE);
   let code = null;
@@ -102,6 +116,9 @@ function connect() {
   ws.onclose = ev => {
     clearInterval(S.ping);
     if (ev.code === 4401) return newSession('Session expirée, nouvelle session démarrée.');
+    if (ev.code === 4403 || ev.code === 4429) {  // refus définitifs : inutile de réessayer en boucle
+      return setConn('off', ev.code === 4403 ? 'accès refusé (nom d\'hôte ou origine)' : 'trop de connexions pour cette session');
+    }
     setConn('off', 'déconnecté, reconnexion…');
     setTimeout(() => { if (S.ws === ws) connect(); }, 1500);
   };
@@ -110,10 +127,23 @@ function connect() {
 
 // -- rendu -----------------------------------------------------------------
 
+const signatures = {};
+// Ne reconstruit une zone que si ses données ont changé : un clic ou un glisser en cours n'est pas perdu
+// parce qu'un instantané identique arrive, et le focus clavier reste en place.
+function changed(zone, value) {
+  const signature = JSON.stringify(value);
+  if (signatures[zone] === signature) return false;
+  signatures[zone] = signature;
+  return true;
+}
+
 function render() {
-  renderBots(); renderSounds(); renderSoundSelect();
-  const sel = S.selected.size;
-  $('sel-label').textContent = `sélection (${sel})`;
+  if (!S.dragging) {  // pas de reconstruction pendant qu'on glisse un son : le glisser serait annulé
+    if (changed('bots', [S.snap.bots, [...S.selected]])) renderBots();
+    if (changed('sounds', [S.snap.sounds, S.snap.library, S.snap.jobs, S.uploads.map(u => u.name)])) renderSounds();
+    renderSoundSelect();
+  }
+  $('sel-label').textContent = `sélection (${S.selected.size})`;
   if (S.open) renderDrawer();
 }
 
@@ -134,7 +164,7 @@ function botCard(b) {
     drop: ev => {
       card.classList.remove('drop');
       const ref = ev.dataTransfer.getData('application/x-zb-sound');
-      if (ref) { ev.preventDefault(); ev.stopPropagation(); startAction([b.id], ref, 1); }
+      if (ref) { ev.preventDefault(); ev.stopPropagation(); S.dragging = false; startAction([b.id], ref, 1); }
     } } },
     el('div', { className: 'card-top' },
       el('input', { type: 'checkbox', checked: S.selected.has(b.id), on: { click: ev => {
@@ -159,7 +189,8 @@ function botCard(b) {
 
 function soundChip(ref, label, extra, removable) {
   return el('span', { className: 'chip', draggable: true, title: 'Glisser sur un bot pour le jouer', on: {
-    dragstart: ev => { ev.dataTransfer.setData('application/x-zb-sound', ref); ev.dataTransfer.effectAllowed = 'copy'; } } },
+    dragstart: ev => { S.dragging = true; ev.dataTransfer.setData('application/x-zb-sound', ref); ev.dataTransfer.effectAllowed = 'copy'; },
+    dragend: () => { S.dragging = false; render(); } } },
     `🔊 ${label}`, extra ? el('span', { className: 'muted' }, extra) : null,
     removable ? el('span', { className: 'x', title: 'Supprimer', on: { click: () => run(() => api(`/api/sounds/${ref}`, 'DELETE')) } }, '✕') : null);
 }
@@ -191,7 +222,7 @@ function renderSoundSelect() {
 
 function actionParams() {
   return { count: +$('act-count').value || 1, gap: +$('act-gap').value || 0,
-           volume: +$('act-volume').value, stagger: +$('act-stagger').value || 0 };
+           volume: $('act-volume').value === '' ? 1 : +$('act-volume').value, stagger: +$('act-stagger').value || 0 };
 }
 
 async function startAction(bots, sound, countOverride) {
@@ -221,7 +252,8 @@ $('sel-all').addEventListener('click', () => {
 
 // -- déploiement -----------------------------------------------------------
 
-$('deploy-btn').addEventListener('click', async () => {
+$('deploy-btn').addEventListener('click', ev => busy(ev.currentTarget, deploy));
+async function deploy() {
   const links = $('links').value.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
     const [meeting, ...rest] = line.split('|');
     return { meeting: meeting.trim(), passcode: rest.join('|').trim() || null };
@@ -231,12 +263,18 @@ $('deploy-btn').addEventListener('click', async () => {
                  mode: document.querySelector('input[name=mode]:checked').value, auto_reconnect: $('reconnect').checked };
   const r = await run(() => api('/api/deploy', 'POST', body));
   if (r) toast(`${r.bots.length} bot(s) en cours de connexion`);
-});
+}
 
 // -- sons : glisser-déposer, parcourir, YouTube -----------------------------
 
+const AUDIO_EXTS = ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.opus', '.aac', '.mp4', '.webm', '.mkv'];
+
 async function uploadFiles(files) {
+  const limit = S.config.limits.upload_mb * 1024 * 1024;
   for (const file of files) {
+    const ext = file.name.includes('.') ? file.name.slice(file.name.lastIndexOf('.')).toLowerCase() : '';
+    if (!AUDIO_EXTS.includes(ext)) { toast(`${file.name} : format non géré (${ext || 'sans extension'})`, true); continue; }
+    if (file.size > limit) { toast(`${file.name} : trop gros (max ${S.config.limits.upload_mb} Mo)`, true); continue; }
     const entry = { name: file.name };
     S.uploads.push(entry); renderSounds();
     try { await api(`/api/sounds?name=${enc(file.name)}`, 'PUT', file); }
@@ -260,17 +298,22 @@ $('dropzone').addEventListener('click', () => $('file-input').click());
 $('dropzone').addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') $('file-input').click(); });
 $('file-input').addEventListener('change', ev => { uploadFiles([...ev.target.files]); ev.target.value = ''; });
 
-$('yt-btn').addEventListener('click', async () => {
+$('yt-btn').addEventListener('click', ev => busy(ev.currentTarget, async () => {
   const url = $('yt-url').value.trim();
   if (!url) return;
   if (await run(() => api('/api/youtube', 'POST', { url }), 'Téléchargement lancé')) $('yt-url').value = '';
-});
+}));
 $('yt-url').addEventListener('keydown', ev => { if (ev.key === 'Enter') $('yt-btn').click(); });
 
 // -- panneau d'un bot ------------------------------------------------------
 
 let drawerTimer;
+let drawerBusy = false;
 function openDrawer(id) {
+  if (S.open !== id) {  // pas d'état de l'ancien bot affiché pendant le chargement du nouveau
+    $('d-events').replaceChildren();
+    $('d-shot').removeAttribute('src');
+  }
   S.open = id;
   $('drawer').hidden = false;
   renderDrawer();
@@ -299,7 +342,12 @@ function renderDrawer() {
 
 async function refreshDrawer() {
   const id = S.open;
-  if (!id) return;
+  if (!id || drawerBusy) return;  // une capture lente ne s'empile pas
+  drawerBusy = true;
+  try { await refreshDrawerOnce(id); } finally { drawerBusy = false; }
+}
+
+async function refreshDrawerOnce(id) {
   try {
     const events = await api(`/api/bots/${id}/events`);
     if (S.open !== id) return;

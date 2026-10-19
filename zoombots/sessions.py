@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import sys
 import time
 import uuid
@@ -19,8 +20,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from . import net
 from .bot import Bot
 from .log import DATA_DIR
+from . import manager as manager_module
 from .manager import BotManager, list_sounds, sound_path
 from .meeting import parse_meeting
 
@@ -41,11 +44,17 @@ MAX_SOUNDS = int(os.environ.get("ZOOMBOTS_SESSION_MAX_SOUNDS", "20"))
 MAX_SOUND_SECONDS = int(os.environ.get("ZOOMBOTS_MAX_SOUND_SECONDS", "900"))
 YT_TIMEOUT_S = int(os.environ.get("ZOOMBOTS_YT_TIMEOUT", "180"))
 JOB_ERROR_TTL_S = 20
+DESTROY_TIMEOUT_S = 60
 MAX_LINKS = 20
 MAX_DEPLOY = 50
 MAX_ACTION_COUNT = 1000
+MAX_PARALLEL_UPLOADS = 2
 UPLOAD_EXTS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".opus", ".aac", ".mp4", ".webm", ".mkv"}
 YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+
+
+def mgr_max() -> int:
+    return manager_module.MAX_BOTS
 
 
 class SessionError(Exception):
@@ -75,6 +84,7 @@ class Action:
     bot_id: str
     sound: str
     total: int
+    sound_id: str = ""
     done: int = 0
     status: str = "pending"  # pending | running | done | stopped | error
     error: str | None = None
@@ -97,24 +107,34 @@ def clean_name(raw: str) -> str:
     return name[:80] or "son"
 
 
+def _kill_group(proc) -> None:
+    """Tue le processus et ses enfants (yt-dlp lance ffmpeg) : `proc.kill()` n'atteint que le premier."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
+
+
 async def _run(*args: str, timeout: float = 30) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True,
+        env=net.clean_env())
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        _kill_group(proc)
         await proc.wait()
         raise SessionError("délai dépassé") from None
     except asyncio.CancelledError:
-        proc.kill()
+        _kill_group(proc)
+        await asyncio.shield(proc.wait())
         raise
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 
 
 async def probe_audio(path: Path) -> float:
     """Durée en secondes d'un fichier audio ou vidéo décodable ; SessionError sinon."""
-    code, out, _ = await _run("ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type",
+    code, out, _ = await _run("ffprobe", "-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=duration:stream=codec_type",
                               "-of", "json", str(path))
     try:
         info = json.loads(out)
@@ -132,8 +152,15 @@ async def probe_audio(path: Path) -> float:
 def youtube_url(raw: str) -> str:
     """URL YouTube normalisée ; toute autre destination est refusée (pas de SSRF via yt-dlp)."""
     parsed = urlparse(raw.strip())
-    if parsed.scheme not in ("http", "https") or (parsed.hostname or "").lower() not in YT_HOSTS:
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or host not in YT_HOSTS:
         raise SessionError("seuls les liens YouTube sont acceptés")
+    path = parsed.path
+    # une vidéo, jamais une playlist, une chaîne ou une page d'information (qui redirige vers un autre hôte)
+    video = (host == "youtu.be" and len(path.strip("/")) > 0 and "/" not in path.strip("/")) \
+        or path == "/watch" or path.startswith(("/shorts/", "/live/", "/embed/"))
+    if not video:
+        raise SessionError("lien de vidéo YouTube attendu (watch?v=…, youtu.be/…, shorts/…), pas une playlist ni une chaîne")
     return parsed.geturl()
 
 
@@ -155,6 +182,9 @@ class Session:
         self.jobs: dict[str, dict] = {}  # téléchargements YouTube
         self.dir = ROOT / sid[:16]
         self._closed = False
+        self._uploads = 0  # envois en cours (comptés dans le plafond de sons dès leur début)
+        self._probe = asyncio.Semaphore(2)  # ffprobe : au plus 2 à la fois par session
+        self._destroyed = asyncio.Event()
 
     # -- présence -----------------------------------------------------------
 
@@ -210,6 +240,9 @@ class Session:
             used = self.registry.active_bots(self.ip)
             if used + total > IP_MAX_BOTS:
                 raise SessionError(f"limite de {IP_MAX_BOTS} bots par adresse IP ({used} actifs)", 429)
+        if total > self.manager.capacity_left():
+            raise SessionError(f"le serveur est plein : {self.manager.capacity_left()} place(s) libre(s) "
+                               f"sur {mgr_max()} (ZOOMBOTS_MAX_BOTS)", 429)
         created: list[Bot] = []
         index = 0
         try:
@@ -231,14 +264,14 @@ class Session:
 
     async def remove_bots(self, finished_only: bool = False) -> int:
         targets = [b.id for b in self.bots if b.finished or not finished_only]
-        await asyncio.gather(*(self.remove_bot(i) for i in targets), return_exceptions=True)
-        return len(targets)
+        results = await asyncio.gather(*(self.remove_bot(i) for i in targets), return_exceptions=True)
+        return sum(1 for r in results if not isinstance(r, Exception))
 
     # -- sons ---------------------------------------------------------------
 
     def _check_sound_slot(self) -> None:
         pending = sum(1 for j in self.jobs.values() if j["status"] == "downloading")
-        if len(self.sounds) + pending >= MAX_SOUNDS:
+        if len(self.sounds) + pending + self._uploads >= MAX_SOUNDS:
             raise SessionError(f"limite de {MAX_SOUNDS} sons par session", 429)
 
     async def add_upload(self, filename: str, chunks) -> Sound:
@@ -246,10 +279,13 @@ class Session:
         if self._closed:
             raise SessionError("session terminée", 410)
         self._check_sound_slot()
+        if self._uploads >= MAX_PARALLEL_UPLOADS:
+            raise SessionError(f"{MAX_PARALLEL_UPLOADS} envois simultanés maximum", 429)
         name = clean_name(filename)
         ext = Path(name).suffix.lower()
         if ext not in UPLOAD_EXTS:
             raise SessionError(f"format non géré ({ext or 'sans extension'})")
+        self._uploads += 1  # place réservée tout de suite (aucun await entre la vérification et ici)
         self.dir.mkdir(parents=True, exist_ok=True)
         sid = "s" + uuid.uuid4().hex[:8]
         path = self.dir / f"{sid}{ext}"
@@ -260,13 +296,16 @@ class Session:
                     size += len(chunk)
                     if size > MAX_UPLOAD_BYTES:
                         raise SessionError(f"fichier trop gros (max {MAX_UPLOAD_BYTES // 2**20} Mo)", 413)
-                    fh.write(chunk)
-            duration = await probe_audio(path)
+                    await asyncio.to_thread(fh.write, chunk)  # un disque lent ne fige pas la boucle
+            async with self._probe:
+                duration = await probe_audio(path)
             if self._closed:
                 raise SessionError("session terminée", 410)
         except BaseException:
             path.unlink(missing_ok=True)
             raise
+        finally:
+            self._uploads -= 1
         sound = Sound(sid, name, path, duration, size, "upload")
         self.sounds[sid] = sound
         return sound
@@ -289,21 +328,30 @@ class Session:
         template = self.dir / f"{job_id}.%(ext)s"
         try:
             code, out, err = await _run(
-                *ytdlp_command(), "--ignore-config", "--no-playlist", "--no-simulate", "-x", "--audio-format", "mp3",
+                *ytdlp_command(), "--ignore-config", "--no-playlist", "--playlist-items", "1", "--use-extractors", "youtube",
+                "--no-simulate", "-x", "--audio-format", "mp3",
                 "--max-filesize", f"{MAX_UPLOAD_BYTES}", "--match-filter", f"duration<={MAX_SOUND_SECONDS}",
-                "--no-progress", "--no-warnings", "--print", "after_move:%(title)s\t%(filepath)s",
+                "--no-progress", "--no-warnings", "--print", "after_move:%(title)s\x1f%(filepath)s",
                 "-o", str(template), "--", url, timeout=YT_TIMEOUT_S)
-            lines = [line for line in out.splitlines() if "\t" in line]
+            lines = [line for line in out.splitlines() if "\x1f" in line]
             if code != 0 or not lines:
-                reason = (err.strip().splitlines() or ["échec du téléchargement"])[-1][:200]
+                reason = net.scrub((err.strip().splitlines() or ["échec du téléchargement"])[-1][:200])
                 if "does not pass filter" in err or "longer than" in err:
                     reason = f"vidéo trop longue (max {MAX_SOUND_SECONDS} s)"
                 raise SessionError(reason)
-            title, filepath = lines[-1].split("\t", 1)
+            title, filepath = lines[-1].split("\x1f", 1)
             path = Path(filepath)
             if path.parent.resolve() != self.dir.resolve() or not path.is_file():
                 raise SessionError("fichier téléchargé introuvable")
-            duration = await probe_audio(path)
+            if path.stat().st_size > MAX_UPLOAD_BYTES:
+                path.unlink(missing_ok=True)
+                raise SessionError(f"fichier trop gros (max {MAX_UPLOAD_BYTES // 2**20} Mo)")
+            try:
+                async with self._probe:
+                    duration = await probe_audio(path)
+            except SessionError:
+                path.unlink(missing_ok=True)
+                raise
             if self._closed:
                 path.unlink(missing_ok=True)
                 return
@@ -312,19 +360,25 @@ class Session:
             job.update(status="ready", title=sound.name, done_at=time.monotonic())
         except asyncio.CancelledError:
             job.update(status="error", done_at=time.monotonic())
+            self._remove_partials(job_id)
             raise
         except SessionError as exc:
             job.update(status="error", error=str(exc), done_at=time.monotonic())
+            self._remove_partials(job_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("youtube failed", extra={"fields": {"error": str(exc)}})
             job.update(status="error", error="échec du téléchargement", done_at=time.monotonic())
+
+    def _remove_partials(self, job_id: str) -> None:
+        for leftover in self.dir.glob(f"{job_id}.*"):
+            leftover.unlink(missing_ok=True)
 
     def delete_sound(self, sound_id: str) -> None:
         sound = self.sounds.pop(sound_id, None)
         if not sound:
             raise SessionError("son inconnu", 404)
         for action in self.actions.values():  # une action en cours utilise le fichier : on l'arrête
-            if action.sound == sound.name and action.status in ("pending", "running"):
+            if action.sound_id == sound_id and action.status in ("pending", "running"):
                 self._cancel_action(action.bot_id)
         sound.path.unlink(missing_ok=True)
 
@@ -356,7 +410,7 @@ class Session:
             raise SessionError("aucun bot actif ciblé")
         for index, bot in enumerate(bots):
             self._cancel_action(bot.id)
-            action = Action(bot.id, name, count)
+            action = Action(bot.id, name, count, sound_ref)
             self.actions[bot.id] = action
             action.task = asyncio.create_task(self._run_action(bot, action, path, volume, gap, index * stagger))
         return [b.id for b in bots]
@@ -381,8 +435,12 @@ class Session:
                 try:
                     await bot.play_wait(path, volume)
                 except RuntimeError as exc:
-                    # coupure en cours de lecture ou micro indisponible : on retente, mais pas indéfiniment
-                    failures += 1
+                    if bot.status != "in_meeting":
+                        # reconnexion en cours : on attend que le bot revienne (ou qu'il soit terminé), sans
+                        # consommer le budget d'échecs — c'est la même lecture qui reprend
+                        await asyncio.sleep(1)
+                        continue
+                    failures += 1  # micro indisponible alors que le bot est dans la réunion
                     if failures >= 3:
                         raise RuntimeError(str(exc)) from exc
                     await asyncio.sleep(1)
@@ -396,7 +454,7 @@ class Session:
             action.status = "stopped"
             raise
         except Exception as exc:  # noqa: BLE001
-            action.status, action.error = "error", str(exc)
+            action.status, action.error = "error", net.scrub(str(exc))
 
     def _cancel_action(self, bot_id: str) -> None:
         action = self.actions.get(bot_id)
@@ -419,6 +477,7 @@ class Session:
 
     async def destroy(self) -> None:
         if self._closed:
+            await self._destroyed.wait()  # un second appel (DELETE pendant l'expiration) attend la fin réelle du nettoyage
             return
         self._closed = True
         tasks = [a.task for a in self.actions.values() if a.task] + [j["task"] for j in self.jobs.values() if j.get("task")]
@@ -427,6 +486,7 @@ class Session:
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.gather(*(self.manager.remove(b.id) for b in self.bots), return_exceptions=True)
         shutil.rmtree(self.dir, ignore_errors=True)
+        self._destroyed.set()
         logger.info("session détruite", extra={"fields": {"session": self.id[:6]}})
 
     def _visible_jobs(self) -> list[dict]:
@@ -459,6 +519,7 @@ class SessionManager:
         self.sessions: dict[str, Session] = {}
         self._reaper: asyncio.Task | None = None
         self._creations: dict[str, deque] = {}  # horodatages de création de sessions, par IP
+        self._destroying: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         shutil.rmtree(ROOT, ignore_errors=True)  # fichiers d'une exécution précédente
@@ -468,6 +529,7 @@ class SessionManager:
         if self._reaper:
             self._reaper.cancel()
             await asyncio.gather(self._reaper, return_exceptions=True)
+        await asyncio.gather(*self._destroying, return_exceptions=True)
         await asyncio.gather(*(s.destroy() for s in list(self.sessions.values())), return_exceptions=True)
         self.sessions.clear()
 
@@ -485,7 +547,8 @@ class SessionManager:
             if len(recent) >= IP_SESSIONS_PER_MINUTE:
                 raise SessionError("trop de sessions créées, réessaie dans une minute", 429)
             recent.append(now)
-        for key in [k for k, q in self._creations.items() if not q]:  # ne pas laisser grossir la table
+        stale = time.monotonic() - 60
+        for key in [k for k, q in self._creations.items() if not q or q[-1] < stale]:  # la table ne grossit pas
             del self._creations[key]
 
     def create(self, ip: str = "") -> Session:
@@ -508,10 +571,22 @@ class SessionManager:
             await session.destroy()
 
     async def _reap_loop(self) -> None:
+        """Détruit les sessions expirées. Chaque destruction est une tâche à part, bornée dans le temps : une
+        session dont le nettoyage se fige, ou lève, ne retarde ni ne tue le nettoyage des autres."""
         while True:
             await asyncio.sleep(min(2.0, max(0.05, GRACE_S / 4)))
             now = time.monotonic()
             for sid, session in list(self.sessions.items()):
                 if session.expired(now):
                     del self.sessions[sid]
-                    await session.destroy()
+                    task = asyncio.create_task(self._destroy_safely(session))
+                    self._destroying.add(task)
+                    task.add_done_callback(self._destroying.discard)
+
+    async def _destroy_safely(self, session: Session) -> None:
+        try:
+            await asyncio.wait_for(session.destroy(), DESTROY_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            logger.error("destruction de session trop longue", extra={"fields": {"session": session.id[:6]}})
+        except Exception:  # noqa: BLE001
+            logger.exception("échec de destruction de session")

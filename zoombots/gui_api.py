@@ -1,8 +1,10 @@
 """API du GUI multi-utilisateurs : tout est rattaché à une session (en-tête X-Session, secret de 192 bits)."""
 
 import asyncio
+import json
 import os
-import secrets
+import time
+from collections import deque
 from collections.abc import Callable
 
 from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -14,6 +16,10 @@ from . import sessions as S
 
 ACCESS_CODE = os.environ.get("ZOOMBOTS_ACCESS_CODE") or None
 PUSH_INTERVAL_S = 1.0
+CODE_FAILURES = 10  # essais ratés du code d'accès tolérés par IP et par fenêtre
+CODE_WINDOW_S = 300
+MAX_WS_PER_SESSION = 5
+WS_FIRST_MESSAGE_MAX = 1024
 
 
 class Link(BaseModel):
@@ -56,6 +62,20 @@ class SessionRequest(BaseModel):
 
 def build_router(sessions: S.SessionManager, host_ok: Callable[[str], bool]) -> APIRouter:
     router = APIRouter(prefix="/api")
+    failures: dict[str, deque] = {}  # essais ratés du code d'accès, par IP
+
+    def client(request_like) -> str:
+        peer = request_like.client.host if request_like.client else None
+        return net.client_ip(peer, ", ".join(request_like.headers.getlist("x-forwarded-for")))
+
+    def code_blocked(bucket: str) -> bool:
+        recent = failures.get(bucket)
+        now = time.monotonic()
+        while recent and now - recent[0] > CODE_WINDOW_S:
+            recent.popleft()
+        if not recent:
+            failures.pop(bucket, None)
+        return bool(recent) and len(recent) >= CODE_FAILURES
 
     def fail(exc: S.SessionError):
         raise HTTPException(exc.status, str(exc)) from exc
@@ -80,11 +100,16 @@ def build_router(sessions: S.SessionManager, host_ok: Callable[[str], bool]) -> 
 
     @router.post("/session")
     async def create_session(request: Request, req: SessionRequest = SessionRequest()):
-        if ACCESS_CODE and not (req.code and secrets.compare_digest(req.code, ACCESS_CODE)):
-            raise HTTPException(401, "code d'accès incorrect")
-        ip = net.client_ip(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
+        ip = client(request)
+        bucket = net.ip_bucket(ip)
+        if ACCESS_CODE:
+            if code_blocked(bucket):
+                raise HTTPException(429, "trop d'essais de code d'accès, réessaie dans quelques minutes")
+            if not net.secret_equal(req.code, ACCESS_CODE):
+                failures.setdefault(bucket, deque()).append(time.monotonic())
+                raise HTTPException(401, "code d'accès incorrect")
         try:
-            return {"sid": sessions.create(ip).id}
+            return {"sid": sessions.create(bucket).id}
         except S.SessionError as exc:
             fail(exc)
 
@@ -197,10 +222,17 @@ def build_router(sessions: S.SessionManager, host_ok: Callable[[str], bool]) -> 
             return
         await websocket.accept()
         try:
-            first = await asyncio.wait_for(websocket.receive_json(), 5)
-            session = sessions.get(first.get("sid") if isinstance(first, dict) else None)
-        except (S.SessionError, asyncio.TimeoutError, ValueError, WebSocketDisconnect):
+            raw = await asyncio.wait_for(websocket.receive_text(), 5)
+            if len(raw) > WS_FIRST_MESSAGE_MAX:
+                raise ValueError("message trop long")
+            first = json.loads(raw)
+            sid = first.get("sid") if isinstance(first, dict) else None
+            session = sessions.get(sid if isinstance(sid, str) else None)
+        except (S.SessionError, asyncio.TimeoutError, ValueError, KeyError, WebSocketDisconnect, RuntimeError):
             await websocket.close(code=4401)
+            return
+        if session.connections >= MAX_WS_PER_SESSION:
+            await websocket.close(code=4429)
             return
         session.attach()
 
@@ -226,4 +258,5 @@ def build_router(sessions: S.SessionManager, host_ok: Callable[[str], bool]) -> 
             await asyncio.gather(*tasks, return_exceptions=True)
             session.detach()
 
+    router.code_failures = failures  # exposé pour les tests
     return router

@@ -18,6 +18,9 @@ logger = logging.getLogger("zoombots.bot")
 
 HEADED = os.environ.get("ZOOMBOTS_HEADED") == "1"  # à combiner avec xvfb-run
 CHROMIUM_PATH = os.environ.get("ZOOMBOTS_CHROMIUM") or None
+# Playwright désactive le sandbox de Chromium par défaut. On l'active sauf sous root (Chromium le refuse) ou si
+# ZOOMBOTS_SANDBOX=0 (conteneur sans espaces de noms utilisateur : l'isolation est alors celle du conteneur).
+SANDBOX = os.environ.get("ZOOMBOTS_SANDBOX", "1" if os.geteuid() != 0 else "0") == "1"
 JOIN_TIMEOUT_MS = 60_000
 ADMIT_TIMEOUT_S = int(os.environ.get("ZOOMBOTS_ADMIT_TIMEOUT", "600"))  # attente max en salle d'attente
 WATCH_INTERVAL_S = float(os.environ.get("ZOOMBOTS_WATCH_INTERVAL", "3"))
@@ -211,8 +214,9 @@ class Bot:
         self._browser = await pw.chromium.launch(
             headless=not HEADED,
             executable_path=CHROMIUM_PATH,
-            env={**os.environ, "PULSE_SOURCE": self.mic.source},
+            env=net.clean_env({"PULSE_SOURCE": self.mic.source}),  # sans jeton, code d'accès ni identifiants de proxy
             proxy=proxy,
+            chromium_sandbox=SANDBOX,
             args=["--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required",
                   *LITE_ARGS, *net.privacy_args(proxy is not None)],
         )
@@ -319,6 +323,7 @@ class Bot:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         await self._cleanup()
+        (SCREENSHOT_DIR / f"{self.id}-error.png").unlink(missing_ok=True)  # contenu de réunion : pas conservé
         self._set_status("left")
 
     async def _click_leave(self) -> None:
@@ -337,8 +342,8 @@ class Bot:
         browser, self._browser, self._page = self._browser, None, None
         if browser:
             try:
-                await browser.close()
-            except Exception:  # noqa: BLE001 - navigateur déjà mort
+                await asyncio.wait_for(browser.close(), 15)  # un navigateur figé ne bloque pas le nettoyage
+            except Exception:  # noqa: BLE001 - navigateur déjà mort ou figé
                 pass
         await self.mic.destroy()
 
@@ -359,7 +364,10 @@ class Bot:
     async def screenshot(self) -> bytes:
         """Capture en direct, ou la dernière capture d'erreur si le bot n'a plus de page."""
         if self._page and not self._page.is_closed():
-            return await self._page.screenshot()
+            try:
+                return await self._page.screenshot()
+            except PlaywrightError as exc:  # page fermée pendant la capture
+                raise RuntimeError("capture impossible : la page vient de se fermer") from exc
         last = SCREENSHOT_DIR / f"{self.id}-error.png"
         if last.exists():
             return last.read_bytes()
@@ -394,7 +402,7 @@ class Bot:
         task = await self.play(path, volume)
         await asyncio.wait({task})  # une annulation de l'appelant n'annule pas la lecture : on l'arrête explicitement
         if not task.cancelled() and task.result() is False:
-            raise RuntimeError("lecture en échec (fichier illisible ?)")
+            raise RuntimeError("lecture interrompue ou en échec (fichier illisible ?)")
 
     def stop_sounds(self) -> None:
         self.mic.stop()

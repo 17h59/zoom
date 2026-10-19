@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,6 +15,7 @@ from .gui_api import build_router
 from .log import setup_logging
 from .manager import BotManager, list_sounds, sound_path
 from .meeting import parse_meeting
+from . import sessions as sessions_module
 from .sessions import SessionManager
 
 setup_logging()
@@ -21,13 +23,14 @@ manager = BotManager()
 sessions = SessionManager(manager)
 
 TOKEN = os.environ.get("ZOOMBOTS_TOKEN") or None
-ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1", *filter(None, os.environ.get("ZOOMBOTS_ALLOWED_HOSTS", "").split(","))}
+ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1",
+                 *(h.strip().lower() for h in os.environ.get("ZOOMBOTS_ALLOWED_HOSTS", "").split(",") if h.strip())}
 # `*` : tout nom d'hôte accepté (serveur public sans nom de domaine, joint par son adresse IP)
 PUBLIC_ONLY = os.environ.get("ZOOMBOTS_PUBLIC_ONLY") == "1"  # l'administration n'est joignable que depuis la machine elle-même
 CSRF_HEADER = "x-zoombots"  # un en-tête personnalisé force un preflight CORS, que le serveur ne satisfait jamais
 
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; "
-       "connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+       "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
 # Chemins du GUI utilisateur : accessibles sans jeton d'administration (les sessions ont leur propre secret).
 PUBLIC_PREFIXES = ("/api/", "/static/")
@@ -47,6 +50,9 @@ app = FastAPI(title="zoombots", lifespan=lifespan)
 STATIC = Path(__file__).parent / "static"
 
 
+_HOST_RE = re.compile(r"^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$")
+
+
 def _hostname(header: str) -> str:
     header = header.strip().lower()
     return header[: header.index("]") + 1] if header.startswith("[") else header.split(":")[0]
@@ -57,40 +63,133 @@ def host_allowed(header: str) -> bool:
 
 
 def _reject(status: int, detail: str) -> JSONResponse:
-    return JSONResponse({"detail": detail}, status_code=status, headers={"Content-Security-Policy": CSP})
+    return JSONResponse({"detail": detail}, status_code=status)
 
 
-@app.middleware("http")
-async def guard(request: Request, call_next):
-    """Protège une API locale sans compte : DNS rebinding (Host), CSRF (en-tête + Sec-Fetch-Site), jeton optionnel."""
-    if not host_allowed(request.headers.get("host", "")) and request.url.path != "/health":
-        return _reject(403, "hôte non autorisé (ZOOMBOTS_ALLOWED_HOSTS)")
-    if request.method not in ("GET", "HEAD"):
-        if CSRF_HEADER not in request.headers or request.headers.get("sec-fetch-site") == "cross-site":
-            return _reject(403, "en-tête X-Zoombots requis")
-    path = request.url.path
-    public = path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
-    if PUBLIC_ONLY and not public:
-        ip = net.client_ip(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
-        if not net.is_loopback(ip):
-            return _reject(404, "introuvable")  # l'existence de l'administration n'est pas révélée à l'extérieur
-    if TOKEN and not public:
-        supplied = request.cookies.get("zb_token") or request.headers.get("authorization", "").removeprefix("Bearer ")
-        if path == "/admin" and request.query_params.get("token"):
-            if secrets.compare_digest(request.query_params["token"], TOKEN):
-                resp = RedirectResponse("/admin", status_code=303)
-                resp.set_cookie("zb_token", TOKEN, httponly=True, samesite="strict")
-                return resp
-        if not supplied or not secrets.compare_digest(supplied, TOKEN):
-            return _reject(401, "jeton requis (Authorization: Bearer, ou /admin?token=…)")
-    response = await call_next(request)
+def _harden(response):
+    """En-têtes de sécurité sur TOUTES les réponses, refus et redirections compris."""
     response.headers["Content-Security-Policy"] = CSP
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Cache-Control"] = "no-store"
     return response
 
 
-app.include_router(build_router(sessions, host_allowed))
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    return _harden(await _guard(request, call_next))
+
+
+async def _guard(request: Request, call_next):
+    """Protège une API locale sans compte : DNS rebinding (Host), CSRF (en-tête + Sec-Fetch-Site), jeton optionnel."""
+    host_header = request.headers.get("host", "")
+    # Un Host mal formé (ex. « x/api/ ») fausse `request.url.path` dans les anciennes versions de Starlette :
+    # on le refuse, et on ne juge que sur le chemin réellement routé (scope["path"]).
+    if not _HOST_RE.match(host_header):
+        return _reject(400, "en-tête Host invalide")
+    if not host_allowed(host_header) and request.scope["path"] != "/health":
+        return _reject(403, "hôte non autorisé (ZOOMBOTS_ALLOWED_HOSTS)")
+    if request.method not in ("GET", "HEAD"):
+        if CSRF_HEADER not in request.headers or request.headers.get("sec-fetch-site") == "cross-site":
+            return _reject(403, "en-tête X-Zoombots requis")
+    path = request.scope["path"]
+    public = path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
+    if PUBLIC_ONLY and not public:
+        ip = net.client_ip(request.client.host if request.client else None, ", ".join(request.headers.getlist("x-forwarded-for")))
+        if not net.is_loopback(ip):
+            return _reject(404, "introuvable")  # l'existence de l'administration n'est pas révélée à l'extérieur
+    if TOKEN and not public:
+        supplied = request.cookies.get("zb_token") or request.headers.get("authorization", "").removeprefix("Bearer ")
+        if path == "/admin" and request.query_params.get("token"):
+            if net.secret_equal(request.query_params["token"], TOKEN):
+                resp = RedirectResponse("/admin", status_code=303)
+                resp.set_cookie("zb_token", TOKEN, httponly=True, samesite="strict")
+                return resp
+        if not net.secret_equal(supplied, TOKEN):
+            return _reject(401, "jeton requis (Authorization: Bearer, ou /admin?token=…)")
+    return await call_next(request)
+
+
+class BodyLimit:
+    """Borne la taille des corps de requête avant que FastAPI ne les lise en mémoire : 64 Ko pour le JSON,
+    la taille maximale d'un son (+ 1 Mo) pour `PUT /api/sounds`. Valable sans Caddy devant.
+
+    Un corps JSON est lu ici (au plus 64 Ko en mémoire) puis rejoué à l'application ; l'envoi d'un son est
+    compté au fil du flux, sans être gardé en mémoire."""
+
+    JSON_LIMIT = 64 * 1024
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] in ("GET", "HEAD", "OPTIONS"):
+            return await self.app(scope, receive, send)
+        upload = scope["method"] == "PUT" and scope["path"] == "/api/sounds"
+        limit = (sessions_module.MAX_UPLOAD_BYTES + 2**20) if upload else self.JSON_LIMIT
+        declared = dict(scope["headers"]).get(b"content-length", b"")
+        if declared.isdigit() and int(declared) > limit:
+            return await self._too_large(scope, receive, send)
+        if upload:
+            return await self._stream_upload(scope, receive, send, limit)
+        body, more = b"", True
+        while more:  # corps JSON : lu au plus jusqu'à la limite
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            body += message.get("body", b"")
+            if len(body) > limit:
+                return await self._too_large(scope, receive, send)
+            more = message.get("more_body", False)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)
+
+    async def _stream_upload(self, scope, receive, send, limit):
+        received = 0
+        started = False
+
+        async def counting_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise _TooLarge
+            return message
+
+        async def tracking_send(message):
+            nonlocal started
+            started = started or message["type"] == "http.response.start"
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, tracking_send)
+        except _TooLarge:
+            if not started:
+                await self._too_large(scope, receive, send)
+
+    @staticmethod
+    async def _too_large(scope, receive, send):
+        response = _harden(JSONResponse({"detail": "corps de requête trop volumineux"}, status_code=413))
+        await response(scope, receive, send)
+
+
+class _TooLarge(Exception):
+    pass
+
+
+
+
+app.add_middleware(BodyLimit)
+gui_router = build_router(sessions, host_allowed)
+app.include_router(gui_router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
