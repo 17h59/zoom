@@ -2,12 +2,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from .log import setup_logging
 from .manager import BotManager, list_sounds, sound_path
 from .meeting import parse_meeting
 
+setup_logging()
 manager = BotManager()
 
 
@@ -27,6 +29,7 @@ class SpawnRequest(BaseModel):
     passcode: str | None = None
     name: str = "Bot"
     count: int = Field(1, ge=1, le=20)
+    auto_reconnect: bool = True
 
 
 class PlayRequest(BaseModel):
@@ -61,7 +64,10 @@ async def spawn(req: SpawnRequest):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     names = [req.name] if req.count == 1 else [f"{req.name} {i + 1}" for i in range(req.count)]
-    return [b.to_dict() for b in manager.spawn(meeting, names)]
+    try:
+        return [b.to_dict() for b in manager.spawn(meeting, names, req.auto_reconnect)]
+    except OverflowError as exc:
+        raise HTTPException(429, str(exc)) from exc
 
 
 @app.delete("/bots/{bot_id}")
@@ -108,3 +114,21 @@ async def broadcast(sound: str, req: PlayRequest = PlayRequest()):
         return {"bots": await manager.broadcast(sound, req.volume)}
     except FileNotFoundError as exc:
         raise HTTPException(404, f"son {sound!r} introuvable") from exc
+
+
+@app.get("/stats")
+def stats():
+    return manager.stats()
+
+
+@app.get("/bots/{bot_id}/events")
+def events(bot_id: str):
+    return list(_bot(bot_id).events)
+
+
+@app.get("/bots/{bot_id}/screenshot")
+async def screenshot(bot_id: str):
+    try:
+        return Response(await _bot(bot_id).screenshot(), media_type="image/png")
+    except RuntimeError as exc:
+        raise HTTPException(404, str(exc)) from exc

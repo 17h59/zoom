@@ -11,6 +11,7 @@
   button { cursor: pointer; } button:hover { background: #2a2a2a; }
   .bot { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid #222; flex-wrap: wrap; }
   .bot b { min-width: 120px; } .status { font-size: 12px; opacity: .8; min-width: 90px; }
+  .waiting_room, .reconnecting { color: #fbbf24; } .in_meeting { color: #4ade80; } .denied, .error, .ended { color: #f87171; }
   .err { color: #f87171; font-size: 12px; }
   #sounds button { margin: 2px; }
 </style>
@@ -25,6 +26,8 @@
   <input id="count" type="number" min="1" max="20" value="1" style="width:60px">
   <button onclick="spawn()">Lancer</button>
 </fieldset>
+
+<div id="stats" style="font-size:12px;opacity:.7;margin-bottom:8px"></div>
 
 <fieldset><legend>Soundboard (tous les bots)</legend>
   <div id="sounds"></div>
@@ -51,15 +54,22 @@ async function refresh() {
     : '<i>Dépose des fichiers audio dans le dossier sounds/</i>';
   $('bots').innerHTML = bots.map(b => `
     <div class="bot">
-      <b>${b.name}</b><span class="status">${b.status}</span>
+      <b>${b.name}</b><span class="status ${b.status}">${b.status}${b.reconnects ? ` (↻${b.reconnects})` : ''}</span>
       <button onclick="api('/bots/${b.id}/mic','POST',{on:true})">🎤</button>
       <button onclick="api('/bots/${b.id}/mic','POST',{on:false})">🔇</button>
       <button onclick="api('/bots/${b.id}/stop','POST')">⏹</button>
       ${sounds.map(s => `<button onclick="api('/bots/${b.id}/sounds/${encodeURIComponent(s)}','POST')">${s}</button>`).join('')}
+      <a href="/bots/${b.id}/screenshot" target="_blank" style="color:#93c5fd">📷</a>
       <button onclick="api('/bots/${b.id}','DELETE').then(refresh)">Quitter</button>
       ${b.error ? `<div class="err">${b.error}</div>` : ''}
     </div>`).join('') || '<i>Aucun bot</i>';
 }
+async function refreshStats() {
+  const s = await fetch('/stats').then(r => r.json());
+  $('stats').textContent = `RAM bots: ${s.total_rss_mb} Mo` + (s.avg_rss_mb_per_bot ? ` (~${s.avg_rss_mb_per_bot} Mo/bot, capacité estimée ${s.estimated_capacity})` : '')
+    + ` · RAM dispo: ${s.system.mem_available_mb} Mo · limite: ${s.max_bots} bots`;
+}
+refreshStats(); setInterval(refreshStats, 10000);
 refresh(); setInterval(refresh, 3000);
 </script>
 </body>

@@ -73,3 +73,21 @@ class VirtualMic:
             except RuntimeError:
                 pass
         self._modules.clear()
+
+
+async def cleanup_orphans() -> int:
+    """Décharge les modules zb_* laissés par un process tué brutalement. Renvoie leur nombre."""
+    try:
+        listing = await _run("pactl", "list", "short", "modules")
+    except (RuntimeError, FileNotFoundError):
+        return 0
+    removed = 0
+    for line in listing.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and ("zb_" in parts[2]):
+            try:
+                await _run("pactl", "unload-module", parts[0])
+                removed += 1
+            except RuntimeError:
+                pass
+    return removed

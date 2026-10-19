@@ -1,0 +1,10 @@
+services:
+  zoombots:
+    build: .
+    ports: ["127.0.0.1:8000:8000"]
+    shm_size: 2gb   # Chromium plante avec le /dev/shm par défaut de 64 Mo
+    volumes: ["./sounds:/sounds:ro", "zoombots-data:/data"]
+    environment:
+      ZOOMBOTS_MAX_BOTS: "10"
+volumes:
+  zoombots-data:

@@ -1,6 +1,6 @@
 # zoombots : documentation technique
 
-Documentation de l'existant. Le projet n'est pas poursuivi au-delà de ce squelette.
+Documentation de l'existant. Les fonctionnalités du tableau « Fonctionnalités manquantes » sont désormais implémentées, avec les réserves indiquées dans « État de validation ».
 
 ## Vue d'ensemble
 
@@ -25,8 +25,11 @@ Dashboard / API (FastAPI)
 |---|---|
 | `zoombots/meeting.py` | `Meeting` et `parse_meeting` : extrait l'ID (9 à 11 chiffres) et le `pwd` depuis un ID brut ou un lien `zoom.us/j/...`. Construit l'URL `app.zoom.us/wc/join/<id>`. |
 | `zoombots/audio.py` | `VirtualMic` : charge `module-null-sink` et `module-remap-source` via `pactl`, joue un fichier avec `ffmpeg \| paplay`, arrête les lectures (SIGTERM sur le groupe de processus), décharge les modules à la destruction. |
-| `zoombots/bot.py` | `Bot` : cycle de vie (`created → joining → in_meeting → error/left`), parcours de connexion piloté par sélecteurs, `set_mic`, `play`, `stop_sounds`, `leave`. |
+| `zoombots/bot.py` | `Bot` : cycle de vie (`created → joining → waiting_room → in_meeting → reconnecting → ended/denied/error/left`), parcours de connexion, surveillance de l'état réel et reconnexion automatique (`run`), `set_mic`, `play`, `stop_sounds`, `leave`. |
 | `zoombots/manager.py` | `BotManager` : registre des bots, driver Playwright partagé, `spawn` (tâche asyncio par bot), `broadcast`. Liste et résolution des sons dans `sounds/` (protection contre la traversée de chemin). |
+| `zoombots/state.py` | Persistance JSON atomique de la liste des bots (`ZOOMBOTS_STATE`, défaut `.zoombots/state.json`). |
+| `zoombots/stats.py` | Mesure RSS/CPU par bot en retrouvant ses process Chromium via `PULSE_SOURCE` dans `/proc`. |
+| `zoombots/log.py` | Logs JSON (une ligne par événement) et journal d'événements par bot. |
 | `zoombots/api.py` | API FastAPI et service du dashboard. |
 | `zoombots/static/index.html` | Dashboard sans dépendance, rafraîchi toutes les 3 s. |
 
@@ -50,43 +53,50 @@ Dashboard / API (FastAPI)
 | `POST /bots/{id}/sounds/{sound}` | `{volume}` (0 à 2) |
 | `POST /bots/{id}/stop` | Arrête les lectures du bot |
 | `POST /broadcast/sounds/{sound}` | Joue sur tous les bots dans la réunion |
+| `GET /stats` | RAM/CPU par bot, RAM système, capacité estimée |
+| `GET /bots/{id}/events` | Journal des 50 derniers changements d'état |
+| `GET /bots/{id}/screenshot` | Capture en direct, ou dernière capture d'erreur |
+
+`POST /bots` accepte aussi `auto_reconnect` (défaut `true`) et répond 429 au-delà de `ZOOMBOTS_MAX_BOTS`.
 
 ## Configuration (variables d'environnement)
 
-`ZOOMBOTS_HOST`, `ZOOMBOTS_PORT` (défaut `127.0.0.1:8000`), `ZOOMBOTS_SOUNDS` (dossier des sons), `ZOOMBOTS_HEADED=1` (Chromium non headless, à lancer sous `xvfb-run`).
+`ZOOMBOTS_HOST`, `ZOOMBOTS_PORT` (défaut `127.0.0.1:8000`), `ZOOMBOTS_SOUNDS` (dossier des sons), `ZOOMBOTS_HEADED=1` (Chromium non headless, à lancer sous `xvfb-run`), `ZOOMBOTS_CHROMIUM` (binaire Chromium personnalisé), `ZOOMBOTS_MAX_BOTS` (défaut 20), `ZOOMBOTS_MAX_JOINS` (connexions simultanées, défaut 3), `ZOOMBOTS_ADMIT_TIMEOUT` (attente en salle d'attente, défaut 600 s), `ZOOMBOTS_WATCH_INTERVAL` (défaut 3 s), `ZOOMBOTS_MAX_RECONNECTS` (défaut 3), `ZOOMBOTS_DATA` (état, captures), `ZOOMBOTS_STATE`, `ZOOMBOTS_LOG_LEVEL`.
 
 ## État de validation
 
-- **Validé** : création et destruction du micro virtuel, lecture d'un son et capture côté source virtuelle, arrêt des lectures, nettoyage des modules PulseAudio, parsing des ID et liens.
-- **Non validé** : le parcours de connexion sur le vrai client web Zoom. Les sélecteurs (`#input-for-name`, `#input-for-pwd`, boutons Join/Audio, `aria-label` du micro) sont des hypothèses non vérifiées et peuvent changer côté Zoom.
-- **Non validé** : le fonctionnement de Chromium avec `PULSE_SOURCE` (le test sur page locale a été interrompu).
+- **Testé automatiquement** (`pytest`, 23 tests) : parsing des réunions, classification des états de page (salle d'attente, refus, fin, réunion invalide), boucle de reconnexion (reconnexion après coupure, pas de retry sur refus, abandon après N essais), persistance et restauration, limite de bots, traversée de chemin, API.
+- **Validé manuellement** : micro virtuel, lecture et capture, arrêt des lectures, nettoyage PulseAudio, lecture de `/proc` pour les ressources.
+- **Non validé** : le parcours de connexion sur le vrai client web Zoom. Les sélecteurs (`#input-for-name`, `#input-for-pwd`, boutons Join/Audio/Leave, `aria-label` du micro) et les textes FR/EN de détection d'état sont des hypothèses : aucun accès à une vraie réunion dans l'environnement de développement. À valider avec `/bots/{id}/screenshot` et les logs.
+- **Non validé** : Chromium avec `PULSE_SOURCE`, le `Dockerfile` et `docker-compose.yml`.
 
 ## Limites connues
 
-- Le Chromium de Playwright doit correspondre à la version du paquet ; un binaire existant peut être utilisé via le paramètre `executable_path` de `launch` (non exposé en configuration pour l'instant).
+- Le Chromium de Playwright doit correspondre à la version du paquet ; un binaire existant peut être utilisé via `ZOOMBOTS_CHROMIUM`.
 - `VirtualMic.playing` reste vrai quelques secondes après la fin du son (délai de vidage de `paplay`).
-- Aucun état persisté : un redémarrage du serveur perd la liste des bots (les modules PulseAudio d'un process tué brutalement restent chargés).
+- Après un redémarrage, les bots rejoignent la réunion comme de nouveaux participants (l'état de mute et les lectures en cours ne sont pas restaurés).
 - Pas d'authentification sur l'API (écoute en local par défaut).
 
 ## Périmètre
 
 Linux uniquement (Docker éventuel). Aucune compatibilité macOS/Windows n'est visée. Hors périmètre pour l'instant : dessin, partage d'écran, réception audio, authentification de l'API.
 
-## Fonctionnalités manquantes
+## Fonctionnalités ajoutées
 
-| Manque | Ce qu'il couvrirait | Conséquence actuelle |
-|---|---|---|
-| **Validation du parcours de connexion** | Confirmer que les sélecteurs correspondent au vrai client Zoom (cookies, captcha, formulaire, langues) | Rien ne prouve qu'un bot entre réellement dans une réunion. Un changement de page Zoom le casse. |
-| **Gestion de la salle d'attente et de l'admission** | Détecter « en attente de l'hôte » et un refus d'admission | Le bot attend jusqu'à 5 min sur le bouton audio puis passe en erreur, sans distinguer attente et refus. |
-| **Détection de l'état réel dans la réunion** | Savoir si le bot est expulsé, déconnecté ou si la réunion est terminée | Le statut reste `in_meeting` même si le bot a été retiré. |
-| **Reconnexion automatique** | Rejoindre à nouveau après une coupure ou une expulsion | Un bot perdu reste mort jusqu'à intervention manuelle. |
-| **Persistance de l'état** | Survivre à un redémarrage du serveur | La liste des bots est perdue, et les modules PulseAudio restent chargés si le process est tué brutalement. |
-| **Scaling et mesure des ressources** | Connaître le coût (CPU, RAM) d'un Chromium par bot et le plafond par machine | Aucune mesure : 1 Chromium par bot pèse lourd, la limite réelle est inconnue. |
-| **Optimisation (mutualisation)** | Réduire la consommation CPU/RAM en regroupant plusieurs bots (comptes/sessions distincts) dans un même conteneur Docker ou une même instance, au lieu d'un Chromium complet par bot | Non étudié. Aujourd'hui : 1 process Chromium et 1 micro virtuel par bot, sans partage de ressources, donc coût linéaire en nombre de bots. |
-| **Observabilité** | Logs structurés, captures d'écran en cas d'erreur | Les erreurs se limitent à un message texte dans le dashboard. |
-| **Tests automatisés et revue hostile** | Détecter les bugs de concurrence, de nettoyage et d'architecture | Aucune suite de tests, et la revue n'a pas été lancée. |
+| Fonctionnalité | Implémentation |
+|---|---|
+| Salle d'attente / admission | Pendant la connexion, la page est classée toutes les secondes (`classify_text`) : statut `waiting_room`, `denied` (refus, réunion invalide), `ended`. Délai d'attente configurable. |
+| État réel dans la réunion | Boucle `_watch` : navigateur arrêté, page fermée, expulsion ou fin de réunion font quitter `in_meeting`. |
+| Reconnexion automatique | Backoff exponentiel (2, 4, 8… 30 s), `ZOOMBOTS_MAX_RECONNECTS` essais, désactivable par bot. Pas de reconnexion si la réunion est finie ou l'admission refusée. |
+| Persistance | Liste des bots écrite à chaque changement ; relancés au démarrage du serveur. Les modules PulseAudio `zb_*` orphelins sont déchargés au démarrage. |
+| Mesure des ressources | `/stats` : RSS et CPU par bot, RAM système, capacité estimée (RAM disponible / RSS moyen), plafond `ZOOMBOTS_MAX_BOTS`. |
+| Optimisation | Chromium allégé (sans GPU, sans sortie audio, viewport 800x600), connexions limitées en parallèle pour lisser le pic CPU, déploiement Docker unique (un PulseAudio et un conteneur pour tous les bots). |
+| Observabilité | Logs JSON, journal d'événements par bot, capture d'écran automatique en cas d'erreur, endpoint de capture. |
+| Tests | Suite `pytest` (`pip install -e .[dev]`). |
 
-Non implémentés pour le moment.
+### Limite de la mutualisation
+
+Un process Chromium par bot reste nécessaire : `PULSE_SOURCE` est fixé au lancement, donc un Chromium partagé par plusieurs bots partagerait le même micro. La mutualisation se fait au niveau du conteneur (un serveur PulseAudio, plusieurs bots), pas du navigateur. Le coût reste linéaire ; utiliser `/stats` pour mesurer le plafond réel.
 
 ## Bugs connus
 
