@@ -190,12 +190,24 @@ install_caddy() {
   if command -v caddy >/dev/null 2>&1; then caddy="$(command -v caddy)"; say "Caddy déjà présent ($caddy)"
   elif [ -x "$caddy" ]; then say "Caddy déjà présent ($caddy)"
   else
+    # Arch et Fedora : le paquet de la distribution est le plus simple et le plus fiable (le service n'est pas activé).
+    if command -v pacman >/dev/null 2>&1 && { [ "$(id -u)" -eq 0 ] || [ ${#SUDO[@]} -gt 0 ]; }; then
+      say "installation de Caddy (pacman)"
+      as_root pacman -S --needed --noconfirm caddy && caddy="$(command -v caddy)"
+    elif command -v dnf >/dev/null 2>&1 && { [ "$(id -u)" -eq 0 ] || [ ${#SUDO[@]} -gt 0 ]; }; then
+      say "installation de Caddy (dnf)"
+      as_root dnf install -y caddy && caddy="$(command -v caddy)"
+    fi
+  fi
+  if ! command -v caddy >/dev/null 2>&1 && [ ! -x "$caddy" ]; then
     command -v curl >/dev/null || die "curl est requis pour télécharger Caddy"
     local arch
     case "$(uname -m)" in x86_64|amd64) arch="amd64" ;; aarch64|arm64) arch="arm64" ;; armv7l) arch="arm&arm=7" ;; *) die "architecture non gérée pour Caddy : $(uname -m)" ;; esac
-    say "téléchargement de Caddy ($arch)"
-    as_user curl --proto '=https' --tlsv1.2 -fsSL "https://caddyserver.com/api/download?os=linux&arch=$arch" -o "$caddy.tmp" \
-      || { rm -f "$caddy.tmp"; die "téléchargement de Caddy impossible"; }
+    say "téléchargement de Caddy ($arch) : le serveur le compile à la demande, cela peut prendre une minute"
+    # délais et nouvelles tentatives : un serveur lent ne doit pas bloquer l'installation indéfiniment
+    as_user curl --proto '=https' --tlsv1.2 -fL --progress-bar --connect-timeout 15 --max-time 300 --retry 2 \
+      "https://caddyserver.com/api/download?os=linux&arch=$arch" -o "$caddy.tmp" \
+      || { rm -f "$caddy.tmp"; die "téléchargement de Caddy impossible : installe-le avec ton gestionnaire de paquets (ex. pacman -S caddy), puis relance ./install.sh --server"; }
     as_user chmod +x "$caddy.tmp"
     as_user "$caddy.tmp" version >/dev/null || { rm -f "$caddy.tmp"; die "le binaire Caddy téléchargé ne fonctionne pas"; }
     as_user mv "$caddy.tmp" "$caddy"
