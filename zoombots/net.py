@@ -67,6 +67,20 @@ def next_proxy() -> dict | None:
     return pool[next(_counter) % len(pool)]
 
 
+def download_proxy_env() -> dict[str, str]:
+    """Variables de proxy pour yt-dlp (proxy HTTP(S) du pool ; elles ne passent jamais par argv, donc pas par `ps`).
+
+    Avec ZOOMBOTS_REQUIRE_PROXY=1, un téléchargement ne part pas en direct : sans proxy HTTP(S) utilisable, erreur."""
+    urls = [p.strip() for p in os.environ.get("ZOOMBOTS_PROXY", "").split(",") if p.strip()]
+    http = [u for u in urls if urlparse(u).scheme in ("http", "https")]
+    if not http:
+        if os.environ.get("ZOOMBOTS_REQUIRE_PROXY") == "1":
+            raise RuntimeError("téléchargement refusé : proxy HTTP(S) requis (yt-dlp ne gère pas SOCKS ici)")
+        return {}
+    url = http[next(_counter) % len(http)]
+    return {"HTTPS_PROXY": url, "HTTP_PROXY": url, "https_proxy": url, "http_proxy": url}
+
+
 def privacy_args(proxied: bool) -> list[str]:
     """Options Chromium limitant les fuites d'adresse IP par WebRTC et QUIC."""
     if proxied:

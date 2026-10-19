@@ -152,14 +152,13 @@ def test_websocket_connections_per_session_are_capped(client, monkeypatch):
 
     monkeypatch.setattr(gui_api, "MAX_WS_PER_SESSION", 1)
     sid = client.post("/api/session", json={}, headers=H).json()["sid"]
-    with client.websocket_connect("ws://localhost/api/ws") as first:
-        first.send_json({"sid": sid})
-        first.receive_json()
-        with client.websocket_connect("ws://localhost/api/ws") as second:
-            second.send_json({"sid": sid})
-            with pytest.raises(WebSocketDisconnect) as exc:
-                second.receive_json()
-            assert exc.value.code == 4429
+    api.sessions.sessions[sid].attach()  # une connexion déjà ouverte pour cette session
+    with client.websocket_connect("ws://localhost/api/ws") as ws:
+        ws.send_json({"sid": sid})
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4429
+    api.sessions.sessions[sid].detach()
     client.delete("/api/session", headers={**H, "X-Session": sid})
 
 
@@ -727,3 +726,40 @@ def test_proxy_and_secrets_can_be_removed_or_regenerated():
     assert "proxy" not in cleared and cleared["code"] == cfg["code"]
     fresh = deploy.update_config(cfg, reset_secrets=True)
     assert fresh["code"] != cfg["code"] and fresh["token"] != cfg["token"] and fresh["proxy"] == cfg["proxy"]
+
+
+def test_download_proxy_env(monkeypatch):
+    monkeypatch.delenv("ZOOMBOTS_PROXY", raising=False)
+    monkeypatch.delenv("ZOOMBOTS_REQUIRE_PROXY", raising=False)
+    assert net.download_proxy_env() == {}
+    monkeypatch.setenv("ZOOMBOTS_PROXY", "socks5://127.0.0.1:1080, http://u:p@h.example:3128")
+    assert net.download_proxy_env()["HTTPS_PROXY"] == "http://u:p@h.example:3128"
+    monkeypatch.setenv("ZOOMBOTS_PROXY", "socks5://127.0.0.1:1080")
+    monkeypatch.setenv("ZOOMBOTS_REQUIRE_PROXY", "1")
+    with pytest.raises(RuntimeError):
+        net.download_proxy_env()  # pas de téléchargement en direct quand un proxy est exigé
+
+
+async def test_youtube_download_goes_through_the_proxy_and_not_via_argv(env, monkeypatch, tmp_path):
+    out = tmp_path / "seen.json"
+    script = tmp_path / "fake.py"
+    script.write_text("import json, os, sys; json.dump({'argv': sys.argv[1:], 'proxy': os.environ.get('HTTPS_PROXY'),"
+                      " 'token': os.environ.get('ZOOMBOTS_TOKEN')}, open(%r, 'w')); sys.exit(1)" % str(out))
+    monkeypatch.setattr(S, "ytdlp_command", lambda: [sys.executable, str(script)])
+    monkeypatch.setenv("ZOOMBOTS_PROXY", "http://u:s3cret@h.example:3128")
+    monkeypatch.setenv("ZOOMBOTS_TOKEN", "admin-token")
+    s = env[1].create()
+    job = s.start_youtube("https://youtu.be/abc")
+    await s.jobs[job]["task"]
+    seen = json.loads(out.read_text())
+    assert seen["proxy"] == "http://u:s3cret@h.example:3128" and "s3cret" not in " ".join(seen["argv"])
+    assert seen["token"] is None  # le jeton d'administration n'est pas hérité par yt-dlp
+
+
+async def test_youtube_refused_when_proxy_required_but_unusable(env, monkeypatch):
+    monkeypatch.delenv("ZOOMBOTS_PROXY", raising=False)
+    monkeypatch.setenv("ZOOMBOTS_REQUIRE_PROXY", "1")
+    s = env[1].create()
+    job = s.start_youtube("https://youtu.be/abc")
+    await s.jobs[job]["task"]
+    assert s.jobs[job]["status"] == "error" and "proxy" in s.jobs[job]["error"]

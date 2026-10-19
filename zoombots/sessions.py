@@ -115,10 +115,10 @@ def _kill_group(proc) -> None:
         proc.kill()
 
 
-async def _run(*args: str, timeout: float = 30) -> tuple[int, str, str]:
+async def _run(*args: str, timeout: float = 30, env: dict[str, str] | None = None) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True,
-        env=net.clean_env())
+        env=net.clean_env(env))
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
@@ -327,12 +327,16 @@ class Session:
         self.dir.mkdir(parents=True, exist_ok=True)
         template = self.dir / f"{job_id}.%(ext)s"
         try:
+            try:
+                proxy_env = net.download_proxy_env()
+            except RuntimeError as exc:
+                raise SessionError(str(exc)) from exc
             code, out, err = await _run(
                 *ytdlp_command(), "--ignore-config", "--no-playlist", "--playlist-items", "1", "--use-extractors", "youtube",
                 "--no-simulate", "-x", "--audio-format", "mp3",
                 "--max-filesize", f"{MAX_UPLOAD_BYTES}", "--match-filter", f"duration<={MAX_SOUND_SECONDS}",
                 "--no-progress", "--no-warnings", "--print", "after_move:%(title)s\x1f%(filepath)s",
-                "-o", str(template), "--", url, timeout=YT_TIMEOUT_S)
+                "-o", str(template), "--", url, timeout=YT_TIMEOUT_S, env=proxy_env)
             lines = [line for line in out.splitlines() if "\x1f" in line]
             if code != 0 or not lines:
                 reason = net.scrub((err.strip().splitlines() or ["échec du téléchargement"])[-1][:200])
