@@ -67,3 +67,28 @@ Dashboard / API (FastAPI)
 - `VirtualMic.playing` reste vrai quelques secondes après la fin du son (délai de vidage de `paplay`).
 - Aucun état persisté : un redémarrage du serveur perd la liste des bots (les modules PulseAudio d'un process tué brutalement restent chargés).
 - Pas d'authentification sur l'API (écoute en local par défaut).
+
+## Périmètre
+
+Linux uniquement (Docker éventuel). Aucune compatibilité macOS/Windows n'est visée. Hors périmètre pour l'instant : dessin, partage d'écran, réception audio, authentification de l'API.
+
+## Fonctionnalités manquantes
+
+| Manque | Ce qu'il couvrirait | Conséquence actuelle |
+|---|---|---|
+| **Validation du parcours de connexion** | Confirmer que les sélecteurs correspondent au vrai client Zoom (cookies, captcha, formulaire, langues) | Rien ne prouve qu'un bot entre réellement dans une réunion. Un changement de page Zoom le casse. |
+| **Gestion de la salle d'attente et de l'admission** | Détecter « en attente de l'hôte » et un refus d'admission | Le bot attend jusqu'à 5 min sur le bouton audio puis passe en erreur, sans distinguer attente et refus. |
+| **Détection de l'état réel dans la réunion** | Savoir si le bot est expulsé, déconnecté ou si la réunion est terminée | Le statut reste `in_meeting` même si le bot a été retiré. |
+| **Reconnexion automatique** | Rejoindre à nouveau après une coupure ou une expulsion | Un bot perdu reste mort jusqu'à intervention manuelle. |
+| **Persistance de l'état** | Survivre à un redémarrage du serveur | La liste des bots est perdue, et les modules PulseAudio restent chargés si le process est tué brutalement. |
+| **Scaling et mesure des ressources** | Connaître le coût (CPU, RAM) d'un Chromium par bot et le plafond par machine | Aucune mesure : 1 Chromium par bot pèse lourd, la limite réelle est inconnue. |
+| **Optimisation (mutualisation)** | Réduire la consommation CPU/RAM en regroupant plusieurs bots (comptes/sessions distincts) dans un même conteneur Docker ou une même instance, au lieu d'un Chromium complet par bot | Non étudié. Aujourd'hui : 1 process Chromium et 1 micro virtuel par bot, sans partage de ressources, donc coût linéaire en nombre de bots. |
+| **Observabilité** | Logs structurés, captures d'écran en cas d'erreur | Les erreurs se limitent à un message texte dans le dashboard. |
+| **Tests automatisés et revue hostile** | Détecter les bugs de concurrence, de nettoyage et d'architecture | Aucune suite de tests, et la revue n'a pas été lancée. |
+
+Non implémentés et sans conséquence technique supplémentaire : garde-fous (limite de bots, marquage visible, arrêt global), repoussés à la demande de l'utilisateur.
+
+## Bugs connus
+
+- `VirtualMic.playing` reste vrai quelques secondes après la fin du son.
+- Chromium avec `PULSE_SOURCE` n'a pas été validé (test interrompu).
