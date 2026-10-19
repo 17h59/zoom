@@ -5,7 +5,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-La suite compte environ 185 tests (quelques dizaines de secondes). Les tests sur navigateur utilisent le Chromium de Playwright, ou un binaire trouvé dans `/opt/pw-browsers`, et sont ignorés s'il n'y en a pas.
+La suite compte environ 250 tests (une quarantaine de secondes). Les tests sur navigateur utilisent le Chromium de Playwright, ou un binaire trouvé dans `/opt/pw-browsers`, et sont ignorés s'il n'y en a pas.
 
 ## Ce qui est testé automatiquement
 
@@ -22,13 +22,15 @@ La suite compte environ 185 tests (quelques dizaines de secondes). Les tests sur
 | Confidentialité | `test_privacy.py` | Proxy (formats, rotation, échec fermé), options Chromium, nettoyage des IP, IP des clients |
 | Plafonds par IP | `test_ip_limits.py` | Sessions, bots, débit ; mode local |
 | Déploiement | `test_deploy.py` | Configuration, domaines, Caddyfile, DNS, `check-ip`, commandes `gui` et `server`, administration cachée |
+| **Revue hostile** | `test_hardening.py` | `Host` mal formé et chemin réellement routé, corps bornés (avec et sans `Content-Length`), essais de code d'accès limités, valeurs non ASCII, IPv6 en /64, `X-Forwarded-For` (plusieurs lignes, IPv4-mappé, CIDR), nettoyage (IPv6 abrégée, port du proxy, mots courts), secrets absents de l'environnement des sous-processus, injection de Caddyfile, envois parallèles, déploiement tout ou rien, yt-dlp (vidéo seulement, options, groupe de processus tué, proxy hors `ps`), destructeur de sessions résistant (figé, en échec), reconnexion pendant une action, `_record_name`, **vrai cycle `gui` → CLI → `shutdown` avec un vrai serveur** (droits 0600/0700, jeton local) |
 | CLI | `test_cli.py` | Préfixes, codes de retour, proxy ignoré, PID recyclé |
 
 ## Validé à la main
 
 - `install.sh` (dont `--server` : téléchargement de Caddy et `setcap`).
 - `zoombots server start --domain …` avec un vrai Caddy : démarrage, Caddyfile généré, arrêt de Caddy par `shutdown`.
-- Plafonds par IP, code d'accès et `X-Forwarded-For` falsifié, à travers Caddy.
+- Plafonds par IP, code d'accès et `X-Forwarded-For` falsifié, à travers Caddy ; en-têtes `Server`/`Via` supprimés, HTTP 413 sur un corps de 100 Ko, HTTP 400 sur un `Host` mal formé, jeton d'administration local exigé et retrouvé par la CLI.
+- Chromium avec son sandbox, lancé par un utilisateur non root (`nobody`).
 - `zoombots gui`, `status`, `shutdown`, `check-ip` (échec d'un proxy injoignable).
 - Cycle complet `start → spawn → rm → shutdown`, y compris l'échec de lancement de Chromium (reconnexions, passage en `error`, aucun module PulseAudio résiduel).
 

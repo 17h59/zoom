@@ -14,6 +14,8 @@ Linux uniquement (PulseAudio est requis). Le script est **idempotent** : on peut
 4. Crée le dossier `sounds/` et le lien `~/.local/bin/zoombots`.
 5. Vérifie `zoombots --help`, `ffmpeg` et `pactl`.
 
+Un `.venv` cassé (Python déplacé ou supprimé) est recréé. Le script lance `playwright install-deps` **en root** depuis ce venv sous Debian/Ubuntu : si le dossier du projet est modifiable par d'autres que toi, n'exécute pas `install.sh` avec `sudo`.
+
 ## Options
 
 | Option | Effet |
@@ -30,7 +32,7 @@ Linux uniquement (PulseAudio est requis). Le script est **idempotent** : on peut
 - **Python < 3.11** (Ubuntu 22.04) : le script cherche `python3.12`, `python3.11`…, puis s'arrête avec une consigne ; le [Dockerfile](docker.md) évite le problème.
 - **Autres distributions que Debian/Ubuntu** : les bibliothèques système de Chromium ne sont pas installées automatiquement ; si Chromium ne démarre pas, voir [Dépannage](troubleshooting.md).
 - **`~/.local/bin` absent du `PATH`** : le script l'indique ; ajoute `export PATH="$HOME/.local/bin:$PATH"` à ton profil.
-- **`--server`** télécharge le binaire Caddy officiel dans `~/.local/bin/caddy` et lui donne le droit d'écouter sur les ports 80/443 sans être root (`setcap`, ce qui demande `sudo`).
+- **`--server`** télécharge le binaire Caddy officiel (en HTTPS uniquement, architectures amd64, arm64 et armv7) dans `~/.local/bin/caddy` et lui donne le droit d'écouter sur les ports 80/443 sans être root (`setcap`, ce qui demande `sudo`). Le binaire est celui de la version courante, **sans vérification d'empreinte** : le script s'assure seulement qu'il s'exécute.
 
 ## Ensuite
 

@@ -8,8 +8,8 @@ Tout se règle par variables d'environnement (`ZOOMBOTS_*`). Les commandes `zoom
 |---|---|---|
 | `ZOOMBOTS_HOST`, `ZOOMBOTS_PORT` | `127.0.0.1`, `8000` | Écoute (hors loopback : jeton obligatoire) |
 | `ZOOMBOTS_URL` | dérivée | URL de l'API pour la CLI |
-| `ZOOMBOTS_ALLOWED_HOSTS` | aucun | Noms d'hôte acceptés en plus de localhost, séparés par des virgules ; `*` = tous |
-| `ZOOMBOTS_TRUSTED_PROXIES` | `127.0.0.1,::1` | Proxies dont `X-Forwarded-For` est cru |
+| `ZOOMBOTS_ALLOWED_HOSTS` | aucun | Noms d'hôte acceptés en plus de localhost, séparés par des virgules (espaces et majuscules ignorés) ; `*` = tous |
+| `ZOOMBOTS_TRUSTED_PROXIES` | `127.0.0.1,::1` | Proxies dont `X-Forwarded-For` est cru : adresses ou réseaux CIDR (`172.16.0.0/12`) |
 | `ZOOMBOTS_PROXY` | aucun | Proxy(s) de sortie des bots, séparés par des virgules ([détail](privacy-ip.md)) |
 | `ZOOMBOTS_REQUIRE_PROXY` | `0` | `1` : aucun bot ne démarre sans proxy |
 
@@ -17,7 +17,7 @@ Tout se règle par variables d'environnement (`ZOOMBOTS_*`). Les commandes `zoom
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `ZOOMBOTS_MODE` | aucun | `local` : plafonds par IP désactivés ; `server` : serveur partagé |
+| `ZOOMBOTS_MODE` | aucun | `local` : plafonds par IP désactivés. `server` : repère le mode serveur pour la CLI (les plafonds par IP s'appliquent dans tout mode autre que `local`) |
 | `ZOOMBOTS_PUBLIC_ONLY` | `0` | `1` : administration injoignable hors de la machine (404) |
 | `ZOOMBOTS_TOKEN` | aucun | Jeton d'administration |
 | `ZOOMBOTS_ACCESS_CODE` | aucun | Code demandé pour ouvrir une session du GUI |
@@ -43,11 +43,12 @@ Tout se règle par variables d'environnement (`ZOOMBOTS_*`). Les commandes `zoom
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `ZOOMBOTS_SESSION_GRACE` | `15` | Délai (s) avant destruction d'une session déconnectée |
-| `ZOOMBOTS_ADMIT_TIMEOUT` | `600` | Attente maximale en salle d'attente (s) |
+| `ZOOMBOTS_ADMIT_TIMEOUT` | `600` | Attente maximale en salle d'attente (s), **par tentative** : avec la reconnexion automatique, jusqu'à `1 + ZOOMBOTS_MAX_RECONNECTS` tentatives |
 | `ZOOMBOTS_WATCH_INTERVAL` | `3` | Période de surveillance (s) |
 | `ZOOMBOTS_MAX_RECONNECTS` | `3` | Reconnexions consécutives |
 | `ZOOMBOTS_STABLE_SESSION` | `60` | Durée d'une session « stable » (s) |
 | `ZOOMBOTS_EXTRA_DOMAINS` | aucun | Domaines Zoom d'entreprise acceptés dans les liens |
+| `ZOOMBOTS_SANDBOX` | `1` hors root, `0` en root | Sandbox de Chromium ([Sécurité](security.md#chromium-et-son-sandbox)) ; `0` dans l'image Docker |
 | `ZOOMBOTS_HEADED` | `0` | `1` : Chromium non headless (sous `xvfb-run`) |
 | `ZOOMBOTS_CHROMIUM` | aucun | Binaire Chromium personnalisé |
 
@@ -55,13 +56,13 @@ Tout se règle par variables d'environnement (`ZOOMBOTS_*`). Les commandes `zoom
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `ZOOMBOTS_DATA` | `~/.local/state/zoombots` | État, captures, sessions, pidfile, journaux, Caddyfile (chemin absolu) |
+| `ZOOMBOTS_DATA` | `~/.local/state/zoombots` (`$XDG_STATE_HOME/zoombots`) | État, captures d'erreur, sessions, pidfile, journaux, Caddyfile (chemin absolu, créé en 0700) |
 | `ZOOMBOTS_STATE` | `<data>/state.json` | Fichier d'état des bots d'administration |
-| `ZOOMBOTS_SOUNDS` | `./sounds` | Dossier des sons du serveur |
+| `ZOOMBOTS_SOUNDS` | `sounds/` à la racine du projet (à côté du paquet, pas le dossier courant) | Dossier des sons du serveur |
 | `ZOOMBOTS_INSTANCE` | aucun | Nom d'instance ([Audio](audio.md#plusieurs-zoombots-sur-un-même-pulseaudio)) |
 | `ZOOMBOTS_LOG_LEVEL` | `INFO` | Niveau de journalisation |
 
-Le répertoire de configuration du serveur partagé est `~/.config/zoombots` (ou `$XDG_CONFIG_HOME/zoombots`).
+Le répertoire de configuration du serveur partagé est `~/.config/zoombots` (ou `$XDG_CONFIG_HOME/zoombots`), en 0600 pour `server.json`. Variables du `docker-compose.yml` seulement : `ZOOMBOTS_MEM_LIMIT` (défaut `8g`).
 
 ## Voir aussi
 

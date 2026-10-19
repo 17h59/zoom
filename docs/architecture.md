@@ -25,7 +25,7 @@ CLI `zoombots` ──HTTP──►  API admin + dashboard (/admin)           │
 | `zoombots/meeting.py` | `Meeting`, `parse_meeting` : ID ou lien Zoom, liste blanche de domaines ([détail](bot-lifecycle.md#domaines-zoom)) |
 | `zoombots/bot.py` | `Bot` : connexion, surveillance, reconnexion, micro, lecture ([détail](bot-lifecycle.md)) |
 | `zoombots/audio.py` | `VirtualMic` : modules PulseAudio, pipeline de lecture ([détail](audio.md)) |
-| `zoombots/manager.py` | `BotManager` : registre, driver Playwright partagé, persistance, plafond global |
+| `zoombots/manager.py` | `BotManager` : registre, driver Playwright partagé, persistance (le fichier d'état n'est réécrit que si la liste d'administration change), plafond global |
 | `zoombots/state.py` | Persistance JSON atomique des bots d'administration |
 | `zoombots/stats.py` | RAM et CPU par bot, lus dans `/proc` |
 | `zoombots/sessions.py` | Sessions du GUI : bots, sons, actions, présence, quotas ([détail](sessions.md)) |
@@ -40,7 +40,7 @@ CLI `zoombots` ──HTTP──►  API admin + dashboard (/admin)           │
 ## Deux familles de bots
 
 - **Bots d'administration** : créés par la CLI ou l'API historique, persistés dans `state.json` et relancés au redémarrage du serveur.
-- **Bots de session** : créés par le GUI, rattachés à un onglet (`owner` = identifiant de session), jamais persistés, retirés quand l'onglet se ferme. L'administration ne les touche pas (`broadcast`, `rm --finished`).
+- **Bots de session** : créés par le GUI, rattachés à un onglet (`owner` = identifiant de session), jamais persistés, retirés quand l'onglet se ferme. L'administration les voit et peut les piloter, mais ses actions de masse (`broadcast`, `rm --finished`) les ignorent.
 
 ## Choix techniques
 

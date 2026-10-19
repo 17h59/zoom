@@ -14,7 +14,7 @@ Le serveur n'est pas lancé : `zoombots gui` ou `zoombots start`. Si tu as chang
 ## Chromium ne démarre pas
 - *Executable doesn't exist* : la version de Playwright ne correspond pas au Chromium téléchargé. Relance `./install.sh` (ou `.venv/bin/python -m playwright install chromium`).
 - Bibliothèques manquantes (hors Debian/Ubuntu) : installe celles que Playwright nomme.
-- Sous **root**, Chromium refuse de démarrer sans `--no-sandbox` : lance zoombots avec un utilisateur normal.
+- Le **sandbox** de Chromium, activé quand zoombots ne tourne pas en root, demande des espaces de noms utilisateur : sur un système qui les interdit (certains conteneurs, noyaux durcis), le bot échoue au lancement avec une erreur de sandbox. Mets `ZOOMBOTS_SANDBOX=0` (et lis [Sécurité](security.md#chromium-et-son-sandbox)). En root, il est déjà désactivé par défaut ; un utilisateur dédié sans droits est préférable.
 - Conteneur : `shm_size` trop petit ([Docker](docker.md)).
 
 ## « PulseAudio est requis » / « impossible de démarrer PulseAudio »
@@ -35,14 +35,17 @@ Zoom n'a pas affiché sa barre d'outils ou a changé le libellé du bouton. Capt
 ## Erreur 429
 Un [plafond](limits.md) est atteint : lis le message (par IP, par session, global). `zoombots stats` montre la capacité de la machine.
 
-## « code d'accès incorrect » (401 à la création de session)
-Le code est celui affiché par `zoombots server info`.
+## « code d'accès incorrect » (401) ou « trop d'essais » (429)
+Le code est celui affiché par `zoombots server info` (`--reset-secrets` en génère un nouveau). Après 10 essais ratés, l'adresse est bloquée quelques minutes.
+
+## « en-tête Host invalide » (400)
+Le client envoie un `Host` mal formé (un proxy mal configuré ?) : il doit être un nom d'hôte ou une adresse, avec un port éventuel.
 
 ## « hôte non autorisé » (403)
 Le nom utilisé dans l'URL n'est pas dans `ZOOMBOTS_ALLOWED_HOSTS` (`zoombots server start --domain …` le règle ; sans domaine, `*` est posé).
 
 ## Le certificat HTTPS n'est pas délivré
-`zoombots server dns` : le domaine pointe-t-il vers ce serveur ? Les ports 80 et 443 sont-ils ouverts ? Lis `~/.local/state/zoombots/caddy.log`. Caddy s'arrête au démarrage si les ports sont interdits : relance `./install.sh --server` (droit `setcap`) ou lance avec `sudo`.
+`zoombots server dns` : le domaine pointe-t-il vers ce serveur ? Les ports 80 et 443 sont-ils ouverts ? Lis `~/.local/state/zoombots/caddy.log`. Caddy s'arrête au démarrage si les ports 80/443 sont **déjà pris** (nginx, Apache, un autre Caddy) ou **interdits** à ton utilisateur : libère-les, ou relance `./install.sh --server` (droit `setcap`). Évite `sudo zoombots server start` : il changerait `HOME`, donc le dossier de données et `server.json` iraient dans `/root`. Un enregistrement `AAAA` qui pointe ailleurs bloque aussi le certificat ([Nom de domaine](domain.md#pas-à-pas)).
 
 ## La page se recharge « vide »
 La session a expiré (onglet fermé plus de 15 s) : une nouvelle session démarre, et les bots de l'ancienne ont été retirés ([Sessions](sessions.md#présence-et-expiration)).

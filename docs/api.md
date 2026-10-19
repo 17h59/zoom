@@ -4,7 +4,7 @@ Deux API distinctes. Les requêtes qui **modifient** l'état doivent porter l'en
 
 ## API d'administration
 
-Pour la CLI et le dashboard `/admin`. Elle voit les bots d'administration (et le dashboard liste tous les bots). Protégée par `ZOOMBOTS_TOKEN` quand il est défini (`Authorization: Bearer …`) ; avec `ZOOMBOTS_PUBLIC_ONLY=1`, elle n'est joignable que depuis la machine.
+Pour la CLI et le dashboard `/admin`. Elle voit **tous les bots du serveur**, y compris ceux des sessions du GUI (champ `owner`) ; seules ses actions de masse (`broadcast`, `DELETE /bots?finished=true`) se limitent aux bots d'administration. Protégée par `ZOOMBOTS_TOKEN` quand il est défini (`Authorization: Bearer …`) ; avec `ZOOMBOTS_PUBLIC_ONLY=1`, elle n'est joignable que depuis la machine. `/docs`, `/redoc` et `/openapi.json` (documentation FastAPI) sont servis par la même application, sous les mêmes règles.
 
 | Route | Description |
 |---|---|
@@ -47,7 +47,11 @@ Préfixe `/api`. Publique (le [code d'accès](server.md#deux-secrets-deux-rôles
 | `POST /api/actions` | `{bots?, sound, count, gap, volume, stagger}` ; `bots` absent = tous les bots actifs ; `sound` = identifiant de session ou `lib:<nom>` |
 | `POST /api/actions/stop` | `{bots?}` : arrête les actions et coupe les sons |
 
-Codes d'erreur : 404 (bot ou son inconnu dans cette session), 410 (session terminée), 413, 422 (validation, message lisible), 429 (plafond atteint).
+Codes d'erreur communs : 400 (en-tête `Host` mal formé), 401 (session inconnue, code d'accès ou jeton faux), 403 (hôte non autorisé, en-tête `X-Zoombots` absent ou requête inter-sites), 404 (bot, son ou route inconnus ; **administration vue de l'extérieur** avec `PUBLIC_ONLY`), 409 (bot hors réunion, micro inutilisable), 410 (session terminée), 413 (corps trop gros), 422 (validation, message lisible), 429 (plafond atteint, trop d'essais de code), 503 (serveur plein).
+
+## Dashboard d'administration
+
+`/admin` (cookie via `/admin?token=…`) : formulaire de lancement de bots, diffusion d'un son en un clic, liste de **tous** les bots avec leurs boutons (micro, arrêt, sons, capture, quitter), statistiques de RAM. C'est l'outil de l'opérateur ; les utilisateurs du serveur n'y ont pas accès.
 
 ## Voir aussi
 
