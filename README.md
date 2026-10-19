@@ -26,4 +26,4 @@ Le GUI (http://127.0.0.1:8000) : chaque onglet est une session isolée (déploye
 
 Avec Docker : `ZOOMBOTS_TOKEN=... docker compose up`.
 
-Documentation technique : [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+Documentation : [docs/README.md](docs/README.md) (installation, GUI, CLI, serveur partagé et nom de domaine, masquage de l'IP, sécurité…)
