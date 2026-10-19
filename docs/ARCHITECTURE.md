@@ -73,7 +73,7 @@ Le lien fourni détermine l'hôte du client web (`https://<hôte>/wc/join/<id>`)
 - **`ffmpeg | paplay` plutôt que `ffmpeg -f pulse`** : le muxer pulse de ffmpeg perd la fin du flux, `paplay` vide son buffer. Pas de shell : deux processus, chacun dans son groupe, arrêtés par SIGTERM. `VirtualMic.playing` reste vrai tant que `paplay` vide son buffer, ce qui correspond à du son encore en cours.
 - **Écriture de l'état groupée** : plusieurs changements dans un même tour de boucle donnent une seule écriture. `shutdown` fige la liste (les `left` de l'arrêt ne la vident pas) : les bots actifs sont relancés au prochain démarrage.
 - **Bots terminés** (`ended`, `denied`, `error`, `left`) : non persistés, non comptés dans `ZOOMBOTS_MAX_BOTS`, retirés par `rm --finished` ou `DELETE /bots?finished=true`.
-- **Démarrage** : les modules PulseAudio `zb_<8 hex>` orphelins sont déchargés (une seule instance de zoombots par serveur PulseAudio). Les entrées d'état invalides (ID de bot, réunion, domaine) sont ignorées sans bloquer le démarrage.
+- **Démarrage** : les modules PulseAudio orphelins de l'instance (`zb_[<instance>_]<8 hex>`) sont déchargés. `ZOOMBOTS_INSTANCE` (1 à 16 caractères `[a-z0-9]`) préfixe les noms PulseAudio et le dossier de données par défaut : plusieurs zoombots peuvent ainsi partager un serveur PulseAudio (chacun avec son port, `ZOOMBOTS_PORT`, et `ZOOMBOTS_INSTANCE` dans l'environnement de sa CLI). Le nettoyage, la mesure de ressources et l'arrêt forcé ne touchent que les ressources de leur instance. Les entrées d'état invalides (ID de bot, réunion, domaine) sont ignorées sans bloquer le démarrage.
 - **Routes** `async` : elles s'exécutent dans la boucle, donc sans accès concurrent au registre. `/stats` s'exécute dans un thread (balayage de `/proc`).
 
 ## API HTTP
@@ -128,6 +128,7 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 | `ZOOMBOTS_MAX_RECONNECTS` | `3` | Reconnexions consécutives |
 | `ZOOMBOTS_STABLE_SESSION` | `60` | Durée d'une session « stable » (s) |
 | `ZOOMBOTS_EXTRA_DOMAINS` | aucun | Domaines Zoom d'entreprise (liste séparée par des virgules) |
+| `ZOOMBOTS_INSTANCE` | aucun | Nom d'instance (plusieurs zoombots sur un même PulseAudio) |
 | `ZOOMBOTS_LOG_LEVEL` | `INFO` | Niveau de log |
 
 ## Docker
@@ -136,7 +137,7 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 
 ## État de validation
 
-- **Testé automatiquement** (`pip install -e .[dev] && pytest`, 89 tests) : parsing et domaines, classification (y compris faux positifs de chat), reconnexion et bornage, libération du sémaphore, annulation sans fuite, persistance (cycle `start → shutdown → start` réel), validation des entrées, sécurité de l'API (Host, CSRF, jeton, CSP), pipeline audio (avec un `paplay` factice), rollback PulseAudio, nettoyage des orphelins, CLI. Tests d'intégration sur **vrai Chromium** avec de fausses pages Zoom : chat contenant « I refuse », dialogue d'expulsion, salle d'attente, surveillance, basculement du micro.
+- **Testé automatiquement** (`pip install -e .[dev] && pytest`, 92 tests) : parsing et domaines, classification (y compris faux positifs de chat), reconnexion et bornage, libération du sémaphore, annulation sans fuite, persistance (cycle `start → shutdown → start` réel), validation des entrées, sécurité de l'API (Host, CSRF, jeton, CSP), pipeline audio (avec un `paplay` factice), rollback PulseAudio, nettoyage des orphelins, CLI. Tests d'intégration sur **vrai Chromium** avec de fausses pages Zoom : chat contenant « I refuse », dialogue d'expulsion, salle d'attente, surveillance, basculement du micro.
 - **Validé manuellement** : cycle `start → spawn → status → rm → shutdown` de la CLI contre un vrai serveur (échec de lancement de Chromium compris : reconnexion, passage en `error`, aucun module PulseAudio résiduel).
 - **Non validé** : le parcours de connexion sur le vrai client web Zoom. Les sélecteurs (`#input-for-name`, `#input-for-pwd`, boutons Join/Audio/Leave, `aria-label` du micro) et les textes de détection d'état sont des hypothèses, faute d'accès à une réunion. À vérifier avec `zoombots screenshot` et `zoombots logs`.
 - **Non validé** : le contenu audio réellement reçu par Zoom (la capture du micro virtuel était silencieuse dans l'environnement de développement, même pour un `paplay` direct, donc non imputable au code), Chromium avec `PULSE_SOURCE` sur une vraie réunion, le `Dockerfile` et `docker-compose.yml`, `install.sh` hors Debian/Ubuntu, le contournement des domaines Zoom pour les comptes `zoomgov`.
@@ -144,7 +145,7 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 ## Limites connues
 
 - Après un redémarrage, les bots rejoignent la réunion comme de nouveaux participants (mute et lectures en cours non restaurés).
-- Un seul zoombots par serveur PulseAudio.
+- Plusieurs zoombots sur un même serveur PulseAudio exigent des `ZOOMBOTS_INSTANCE` distincts (sans instance, deux zoombots se déchargent mutuellement leurs micros au démarrage).
 - Chromium de Playwright : sa version doit correspondre au paquet. Un binaire existant s'utilise via `ZOOMBOTS_CHROMIUM` (sous root, Chromium exige `--no-sandbox`, non ajouté par défaut).
 - Linux uniquement. Hors périmètre : dessin, partage d'écran, réception audio, comptes utilisateurs.
 - `uvicorn` et `playwright` ne sont pas verrouillés (pas de lockfile).

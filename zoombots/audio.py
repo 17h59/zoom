@@ -12,7 +12,16 @@ from pathlib import Path
 logger = logging.getLogger("zoombots.audio")
 
 MAX_PLAYERS = 4  # lectures simultanées par bot
-ORPHAN = re.compile(r"(?:sink_name|source_name)=zb_[0-9a-f]{8}(?:_mic)?(?:\s|$)")
+
+# Préfixe propre à l'instance : ZOOMBOTS_INSTANCE=a donne zb_a_<id>, ce qui permet à plusieurs
+# zoombots de partager un serveur PulseAudio sans décharger les modules les uns des autres.
+INSTANCE = os.environ.get("ZOOMBOTS_INSTANCE", "")
+if INSTANCE and not re.fullmatch(r"[a-z0-9]{1,16}", INSTANCE):
+    raise SystemExit("ZOOMBOTS_INSTANCE : 1 à 16 caractères [a-z0-9]")
+PREFIX = f"zb_{INSTANCE}_" if INSTANCE else "zb_"
+NAME = rf"{PREFIX}[0-9a-f]{{8}}"  # nom de sink d'un bot de cette instance
+ORPHAN = re.compile(rf"(?:sink_name|source_name)={NAME}(?:_mic)?(?:\s|$)")
+OWN_SOURCE = re.compile(rf"{NAME}_mic")
 
 
 async def _run(*args: str) -> str:
@@ -53,8 +62,8 @@ class _Player:
 
 class VirtualMic:
     def __init__(self, bot_id: str):
-        self.sink = f"zb_{bot_id}"
-        self.source = f"zb_{bot_id}_mic"
+        self.sink = f"{PREFIX}{bot_id}"
+        self.source = f"{PREFIX}{bot_id}_mic"
         self._modules: list[str] = []
         self._players: set[_Player] = set()
         self._tasks: set[asyncio.Task] = set()
@@ -134,9 +143,9 @@ class VirtualMic:
 
 
 async def cleanup_orphans() -> int:
-    """Décharge les modules zb_<8 hex> laissés par un process tué brutalement. Renvoie leur nombre.
+    """Décharge les modules de cette instance (zb_[<instance>_]<8 hex>) laissés par un process tué brutalement.
 
-    Suppose une seule instance de zoombots par serveur PulseAudio."""
+    Les autres instances et les autres applications ne sont pas touchées."""
     try:
         listing = await _run("pactl", "list", "short", "modules")
     except (RuntimeError, FileNotFoundError):

@@ -117,3 +117,57 @@ def test_scan_finds_processes_by_pulse_source():
         assert stats.process_usage(found["zb_abcdef01_mic"])["processes"] >= 1
     finally:
         proc.kill()
+
+
+def _reload(monkeypatch, instance):
+    import importlib
+
+    monkeypatch.setenv("ZOOMBOTS_INSTANCE", instance)
+    return importlib.reload(audio)
+
+
+def test_instances_have_distinct_names_and_patterns(monkeypatch):
+    try:
+        a = _reload(monkeypatch, "a")
+        assert a.VirtualMic("abcdef01").sink == "zb_a_abcdef01"
+        assert a.ORPHAN.search("sink_name=zb_a_abcdef01 x") and a.ORPHAN.search("source_name=zb_a_abcdef01_mic")
+        assert not a.ORPHAN.search("sink_name=zb_b_abcdef01") and not a.ORPHAN.search("sink_name=zb_abcdef01")
+        default = _reload(monkeypatch, "")
+        assert default.VirtualMic("abcdef01").sink == "zb_abcdef01"
+        assert default.ORPHAN.search("sink_name=zb_abcdef01") and not default.ORPHAN.search("sink_name=zb_a_abcdef01")
+    finally:
+        monkeypatch.delenv("ZOOMBOTS_INSTANCE")
+        importlib_reload()
+
+
+def importlib_reload():
+    import importlib
+
+    importlib.reload(audio)
+
+
+async def test_cleanup_leaves_other_instances_alone(monkeypatch):
+    try:
+        a = _reload(monkeypatch, "a")
+        unloaded = []
+
+        async def fake_run(*args):
+            if args[1] == "list":
+                return ("1\tmodule-null-sink\tsink_name=zb_a_abcdef01\n"
+                        "2\tmodule-null-sink\tsink_name=zb_b_abcdef02\n"
+                        "3\tmodule-null-sink\tsink_name=zb_abcdef03\n")
+            unloaded.append(args[2])
+            return ""
+
+        monkeypatch.setattr(a, "_run", fake_run)
+        assert await a.cleanup_orphans() == 1 and unloaded == ["1"]
+    finally:
+        monkeypatch.delenv("ZOOMBOTS_INSTANCE")
+        importlib_reload()
+
+
+def test_invalid_instance_name_is_refused(monkeypatch):
+    with pytest.raises(SystemExit):
+        _reload(monkeypatch, "Bad_Name")
+    monkeypatch.delenv("ZOOMBOTS_INSTANCE")
+    importlib_reload()

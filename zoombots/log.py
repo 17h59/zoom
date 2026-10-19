@@ -7,8 +7,10 @@ import sys
 import time
 from pathlib import Path
 
+_INSTANCE = os.environ.get("ZOOMBOTS_INSTANCE", "")
 DATA_DIR = os.environ.get("ZOOMBOTS_DATA") or str(
-    Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "zoombots"
+    Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    / (f"zoombots-{_INSTANCE}" if _INSTANCE else "zoombots")
 )  # absolu : la CLI et le serveur retrouvent les mêmes fichiers quel que soit le répertoire courant
 
 

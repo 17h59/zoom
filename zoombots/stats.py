@@ -6,6 +6,8 @@ Chaque Chromium est lancé avec PULSE_SOURCE=zb_<id>_mic : tous ses process
 import os
 from pathlib import Path
 
+from .audio import OWN_SOURCE
+
 PAGE = os.sysconf("SC_PAGE_SIZE")
 TICK = os.sysconf("SC_CLK_TCK")
 
@@ -22,7 +24,9 @@ def scan_bot_processes() -> dict[str, list[int]]:
             continue
         for item in env:
             if item.startswith(b"PULSE_SOURCE=zb_"):
-                found.setdefault(item[len(b"PULSE_SOURCE="):].decode(), []).append(int(entry.name))
+                source = item[len(b"PULSE_SOURCE="):].decode(errors="replace")
+                if OWN_SOURCE.fullmatch(source):  # seulement les navigateurs de cette instance
+                    found.setdefault(source, []).append(int(entry.name))
                 break
     return found
 
