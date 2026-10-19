@@ -1,10 +1,13 @@
 services:
   zoombots:
     build: .
+    restart: unless-stopped
     ports: ["127.0.0.1:8000:8000"]
     shm_size: 2gb   # Chromium plante avec le /dev/shm par défaut de 64 Mo
     volumes: ["./sounds:/sounds:ro", "zoombots-data:/data"]
     environment:
+      # le conteneur écoute sur 0.0.0.0 : un jeton est obligatoire (ZOOMBOTS_TOKEN=... docker compose up)
+      ZOOMBOTS_TOKEN: ${ZOOMBOTS_TOKEN:?définir ZOOMBOTS_TOKEN}
       ZOOMBOTS_MAX_BOTS: "10"
 volumes:
   zoombots-data:

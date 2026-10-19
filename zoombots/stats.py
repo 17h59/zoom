@@ -10,18 +10,21 @@ PAGE = os.sysconf("SC_PAGE_SIZE")
 TICK = os.sysconf("SC_CLK_TCK")
 
 
-def bot_processes(source: str) -> list[int]:
-    needle = f"PULSE_SOURCE={source}".encode()
-    pids = []
+def scan_bot_processes() -> dict[str, list[int]]:
+    """Un seul balayage de /proc : {source PulseAudio du bot: [pids]}."""
+    found: dict[str, list[int]] = {}
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
         try:
-            if needle in (entry / "environ").read_bytes().split(b"\0"):
-                pids.append(int(entry.name))
+            env = (entry / "environ").read_bytes().split(b"\0")
         except OSError:
             continue
-    return pids
+        for item in env:
+            if item.startswith(b"PULSE_SOURCE=zb_"):
+                found.setdefault(item[len(b"PULSE_SOURCE="):].decode(), []).append(int(entry.name))
+                break
+    return found
 
 
 def process_usage(pids: list[int]) -> dict:

@@ -7,7 +7,7 @@ from playwright.async_api import Playwright, async_playwright
 from . import state, stats
 from .audio import cleanup_orphans
 from .bot import Bot
-from .meeting import Meeting
+from .meeting import Meeting, normalize_host
 
 SOUNDS_DIR = Path(os.environ.get("ZOOMBOTS_SOUNDS", Path(__file__).parent.parent / "sounds"))
 MAX_BOTS = int(os.environ.get("ZOOMBOTS_MAX_BOTS", "20"))
@@ -20,51 +20,82 @@ def list_sounds() -> list[str]:
 
 
 def sound_path(name: str) -> Path:
-    path = (SOUNDS_DIR / name).resolve()
-    if path.parent != SOUNDS_DIR.resolve() or not path.is_file():
+    if not name or "\0" in name or "/" in name or "\\" in name or Path(name).suffix.lower() not in SOUND_EXTS:
         raise FileNotFoundError(name)
+    try:
+        path = (SOUNDS_DIR / name).resolve()
+        if path.parent != SOUNDS_DIR.resolve() or not path.is_file():
+            raise FileNotFoundError(name)
+    except (OSError, ValueError):
+        raise FileNotFoundError(name) from None
     return path
 
 
 class BotManager:
     def __init__(self, state_path=None) -> None:
         self.bots: dict[str, Bot] = {}
-        self._tasks: dict[str, asyncio.Task] = {}
         self._pw_cm = None
         self._pw: Playwright | None = None
         self._join_gate = asyncio.Semaphore(MAX_CONCURRENT_JOINS)
         self._state_path = state_path or state.STATE_FILE
+        self._stopping = False
+        self._dirty = False
 
     async def start(self) -> None:
         self._pw_cm = async_playwright()
         self._pw = await self._pw_cm.__aenter__()
         await cleanup_orphans()  # micros laissés par un process tué brutalement
         for entry in state.load(self._state_path):
-            bot = Bot(Meeting(entry["meeting"], entry.get("passcode")), entry["name"], bot_id=entry["id"],
-                      auto_reconnect=entry.get("auto_reconnect", True), on_change=self._persist)
+            if len(self._active()) >= MAX_BOTS or entry["id"] in self.bots:
+                continue
+            try:
+                meeting = Meeting(entry["meeting"], entry.get("passcode"), normalize_host(entry.get("host") or "app.zoom.us"))
+                if not (meeting.id.isdigit() and 9 <= len(meeting.id) <= 11):
+                    raise ValueError(meeting.id)
+            except ValueError:
+                continue  # entrée altérée : ignorée plutôt que de bloquer le démarrage
+            bot = Bot(meeting, entry["name"][:64], bot_id=entry["id"],
+                      auto_reconnect=bool(entry.get("auto_reconnect", True)), on_change=self._persist)
             self._register(bot)
 
     async def shutdown(self) -> None:
-        self._persist()  # on garde la liste : les bots seront relancés au prochain démarrage
-        await asyncio.gather(*(b.leave() for b in self.bots.values()), return_exceptions=True)
+        self.flush()  # la liste est figée : les `left` de l'arrêt ne doivent pas la vider
+        self._stopping = True
+        await asyncio.gather(*(b.leave() for b in list(self.bots.values())), return_exceptions=True)
         if self._pw_cm:
             await self._pw_cm.__aexit__(None, None, None)
 
+    def _active(self) -> list[Bot]:
+        return [b for b in self.bots.values() if not b.finished]
+
     def _persist(self) -> None:
-        state.save([b.to_state() for b in self.bots.values() if b.status != "left"], self._state_path)
+        """Planifie une écriture groupée : plusieurs changements dans le même tour de boucle = un seul fichier."""
+        if self._stopping or self._dirty:
+            return
+        self._dirty = True
+        try:
+            asyncio.get_running_loop().call_soon(self.flush)
+        except RuntimeError:
+            self.flush()
+
+    def flush(self) -> None:
+        self._dirty = False
+        if self._stopping:
+            return
+        state.save([b.to_state() for b in self.bots.values() if not b.finished], self._state_path)
 
     def _register(self, bot: Bot) -> None:
         self.bots[bot.id] = bot
-        self._tasks[bot.id] = asyncio.create_task(bot.run(self._pw, self._join_gate))
+        bot.start(self._pw, self._join_gate)
 
     def spawn(self, meeting: Meeting, names: list[str], auto_reconnect: bool = True) -> list[Bot]:
         assert self._pw is not None
-        if len(self.bots) + len(names) > MAX_BOTS:
-            raise OverflowError(f"limite de {MAX_BOTS} bots atteinte (ZOOMBOTS_MAX_BOTS)")
+        if len(self._active()) + len(names) > MAX_BOTS:
+            raise OverflowError(f"limite de {MAX_BOTS} bots actifs atteinte (ZOOMBOTS_MAX_BOTS)")
         bots = [Bot(meeting, n, auto_reconnect=auto_reconnect, on_change=self._persist) for n in names]
         for bot in bots:
             self._register(bot)
-        self._persist()
+        self.flush()
         return bots
 
     def get(self, bot_id: str) -> Bot:
@@ -76,21 +107,28 @@ class BotManager:
     async def remove(self, bot_id: str) -> None:
         bot = self.get(bot_id)
         await bot.leave()
-        task = self._tasks.pop(bot_id, None)
-        if task:
-            task.cancel()
-        del self.bots[bot_id]
-        self._persist()
+        self.bots.pop(bot_id, None)
+        self.flush()
 
-    async def broadcast(self, sound: str, volume: float = 1.0) -> int:
+    def purge_finished(self) -> int:
+        """Retire les bots terminés (ended, denied, error, left) de la liste."""
+        done = [i for i, b in self.bots.items() if b.finished]
+        for bot_id in done:
+            del self.bots[bot_id]
+        self.flush()
+        return len(done)
+
+    async def broadcast(self, sound: str, volume: float = 1.0) -> dict:
         path = sound_path(sound)
         ready = [b for b in self.bots.values() if b.status == "in_meeting"]
-        await asyncio.gather(*(b.play(path, volume) for b in ready))
-        return len(ready)
+        results = await asyncio.gather(*(b.play(path, volume) for b in ready), return_exceptions=True)
+        failed = [{"bot": b.id, "error": str(r)} for b, r in zip(ready, results) if isinstance(r, Exception)]
+        return {"played": len(ready) - len(failed), "failed": failed}
 
     def stats(self) -> dict:
         """Ressources par bot et capacité estimée de la machine (mémoire disponible / RSS moyen)."""
-        per_bot = {b.id: b.resources() for b in self.bots.values()}
+        processes = stats.scan_bot_processes()  # un seul balayage de /proc pour tous les bots
+        per_bot = {b.id: stats.process_usage(processes.get(b.mic.source, [])) for b in list(self.bots.values())}
         active = [r for r in per_bot.values() if r["processes"]]
         system = stats.system_usage()
         total_rss = sum(r["rss_mb"] for r in active)
