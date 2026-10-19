@@ -5,7 +5,7 @@
 - Le parcours de connexion repose sur des sélecteurs et des textes **non vérifiés** face à un vrai Zoom ; une évolution de la page de Zoom peut le casser ([Tests et validation](testing.md)).
 - Les captcha, les réunions qui exigent un compte, un enregistrement ou une inscription ne sont pas gérés.
 - La détection d'une expulsion repose sur des messages en anglais et en français.
-- Un hôte Zoom peut reconnaître un bot (nom, comportement) et l'expulser.
+- Un hôte Zoom peut reconnaître un bot (nom, comportement) et l'expulser : le bot banni est alors tué et remplacé automatiquement par un nouveau bot (jusqu'à `ZOOMBOTS_MAX_RESPAWNS` fois, voir [Furtivité et anti-ban](anti-ban.md)).
 
 ## Audio
 
@@ -47,4 +47,4 @@
 
 ## Voir aussi
 
-[Tests et validation](testing.md) · [Sécurité](security.md#ce-qui-nest-pas-couvert)
+[Furtivité et anti-ban](anti-ban.md) · [Tests et validation](testing.md) · [Sécurité](security.md#ce-qui-nest-pas-couvert)

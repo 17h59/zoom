@@ -13,6 +13,7 @@ Chaque page traite un seul sujet. Commence par la colonne « Tu veux… ».
 | Piloter en ligne de commande | [La CLI](cli.md) |
 | Héberger pour d'autres utilisateurs | [Serveur partagé](server.md), puis [Nom de domaine](domain.md) |
 | Cacher l'adresse IP de ta machine | [Masquer l'IP](privacy-ip.md) |
+| Éviter la détection et gérer les expulsions | [Furtivité et anti-ban](anti-ban.md) |
 | Savoir ce qui est limité, et pourquoi | [Limites et quotas](limits.md) |
 | Régler un comportement | [Configuration](configuration.md) |
 | Comprendre un problème | [Dépannage](troubleshooting.md) |
@@ -23,6 +24,7 @@ Chaque page traite un seul sujet. Commence par la colonne « Tu veux… ».
 |---|---|
 | [Architecture](architecture.md) | Vue d'ensemble, modules, choix techniques |
 | [Cycle de vie d'un bot](bot-lifecycle.md) | Connexion, salle d'attente, surveillance, reconnexion, micro, domaines Zoom |
+| [Furtivité et anti-ban](anti-ban.md) | Mode headed sous Xvfb, masquage d'automatisation, son d'origine, remplacement automatique des bots expulsés |
 | [Audio](audio.md) | Micro virtuel PulseAudio, lecture des sons, instances |
 | [Sessions du GUI](sessions.md) | Une session par onglet : présence, sons, actions, expiration |
 | [API HTTP](api.md) | API d'administration et API du GUI |

@@ -21,7 +21,7 @@
 
 | Commande | Effet |
 |---|---|
-| `zoombots spawn <id\|lien> [-p passcode] [-n nom] [-c N] [--no-reconnect] [--wait SEC]` | Crée N bots ; `--wait` attend leur connexion et rend 1 si l'un n'est pas entré |
+| `zoombots spawn <id\|lien> [-p passcode] [-n nom] [-c N] [--no-reconnect] [--no-respawn] [--wait SEC]` | Crée N bots ; `--no-respawn` désactive le respawn sur ban ; `--wait` attend leur connexion et rend 1 si l'un n'est pas entré |
 | `zoombots list [--json]` | Liste les bots |
 | `zoombots rm <bots…>` · `--all` · `--finished` | Fait quitter et supprime |
 | `zoombots mic <bot> on\|off` | Micro d'un bot |
@@ -52,4 +52,4 @@ L'administration voit **tous les bots du serveur**, y compris ceux des sessions 
 
 ## Voir aussi
 
-[Modes de lancement](modes.md) · [API HTTP](api.md) · [Configuration](configuration.md)
+[Modes de lancement](modes.md) · [Furtivité et anti-ban](anti-ban.md) · [API HTTP](api.md) · [Configuration](configuration.md)

@@ -42,8 +42,10 @@ Fixes : 20 liens et 50 bots par déploiement, 1000 répétitions par action, cor
 | Bots actifs sur le serveur (tous utilisateurs et administration) | 20 | `ZOOMBOTS_MAX_BOTS` |
 | Sessions simultanées sur le serveur | 20 (10 avec `zoombots gui`) | `ZOOMBOTS_MAX_SESSIONS` |
 | Connexions simultanées de bots (hors attente d'admission) | 3 | `ZOOMBOTS_MAX_JOINS` |
+| Respawns consécutifs en cas d'expulsion (anti-ban) | 10 | `ZOOMBOTS_MAX_RESPAWNS` |
+| Reconnexions consécutives en cas de coupure | 3 | `ZOOMBOTS_MAX_RECONNECTS` |
 
-Le plafond de connexions simultanées lisse le pic de CPU quand beaucoup de bots démarrent ; il est libéré avant la salle d'attente, qui ne bloque donc pas les autres bots.
+Le plafond de connexions simultanées lisse le pic de CPU quand beaucoup de bots démarrent ; il est libéré avant la salle d'attente, qui ne bloque donc pas les autres bots. Le plafond de respawns ([Furtivité et anti-ban](anti-ban.md#protection-anti-boucle)) empêche un emballement infini si l'hôte expulse en chaîne.
 
 ## Combien de bots tient la machine
 
@@ -56,4 +58,4 @@ Chaque bot est un Chromium complet : compte de l'ordre de **300 à 500 Mo de RAM
 
 ## Voir aussi
 
-[Sessions](sessions.md) · [Configuration](configuration.md) · [Sécurité](security.md)
+[Sessions](sessions.md) · [Furtivité et anti-ban](anti-ban.md) · [Configuration](configuration.md) · [Sécurité](security.md)

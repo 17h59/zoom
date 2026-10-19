@@ -11,7 +11,7 @@ Pour la CLI et le dashboard `/admin`. Elle voit **tous les bots du serveur**, y 
 | `GET /admin` | Dashboard d'administration (cookie via `/admin?token=…`) |
 | `GET /health` | Sonde, sans authentification |
 | `GET /bots` | Liste et statut des bots |
-| `POST /bots` | `{meeting, passcode?, name, count, auto_reconnect}` (1 à 20 bots, nom ≤ 60, passcode ≤ 64) ; 429 au-delà de `ZOOMBOTS_MAX_BOTS` |
+| `POST /bots` | `{meeting, passcode?, name, count, auto_reconnect, respawn_on_ban}` (1 à 20 bots, nom ≤ 60, passcode ≤ 64) ; 429 au-delà de `ZOOMBOTS_MAX_BOTS` |
 | `DELETE /bots?finished=true` | Retire les bots d'administration terminés |
 | `DELETE /bots/{id}` | Quitte et supprime |
 | `POST /bots/{id}/mic` | `{on}` → `{ok, changed}` |
@@ -36,7 +36,7 @@ Préfixe `/api`. Publique (le [code d'accès](server.md#deux-secrets-deux-rôles
 | `DELETE /api/session` | Détruit la session (bots retirés, fichiers supprimés) |
 | `GET /api/state` | Instantané : bots (avec action), sons, bibliothèque, téléchargements |
 | `WS /api/ws` | Premier message `{sid}` ; état poussé à chaque changement. Codes de fermeture : 4401 session inconnue, 4403 hôte ou origine refusés |
-| `POST /api/deploy` | `{links:[{meeting, passcode?}], count, mode: split\|each, name, auto_reconnect}` → `{bots:[id…]}` |
+| `POST /api/deploy` | `{links:[{meeting, passcode?}], count, mode: split\|each, name, auto_reconnect, respawn_on_ban}` → `{bots:[id…]}` |
 | `DELETE /api/bots[?finished=true]` | Retire tous les bots (ou les terminés) de la session |
 | `DELETE /api/bots/{id}` | Retire un bot |
 | `POST /api/bots/{id}/mic` | `{on}` |
@@ -55,4 +55,4 @@ Codes d'erreur communs : 400 (en-tête `Host` mal formé), 401 (session inconnue
 
 ## Voir aussi
 
-[Sessions](sessions.md) · [Sécurité](security.md) · [Limites et quotas](limits.md) · [La CLI](cli.md)
+[Sessions](sessions.md) · [Furtivité et anti-ban](anti-ban.md) · [Sécurité](security.md) · [Limites et quotas](limits.md) · [La CLI](cli.md)

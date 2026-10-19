@@ -23,11 +23,11 @@ Installe `pulseaudio-utils` et un serveur PulseAudio ou PipeWire-pulse (`./insta
 ## Un bot reste bloqué
 - `joining` longtemps : regarde la capture ; un sélecteur de la page Zoom a peut-être changé ([Limitations](known-limitations.md#zoom)).
 - `waiting_room` : l'hôte doit admettre le bot (attente max `ZOOMBOTS_ADMIT_TIMEOUT`).
-- `denied` : expulsion confirmée, refus ou réunion invalide ; pas de reconnexion automatique.
+- `denied` : en cas d'expulsion confirmée par l'hôte, le bot est tué et remplacé automatiquement jusqu'à 10 fois ([Furtivité et anti-ban](anti-ban.md)). Si le statut reste en `denied`, c'est que l'ID de réunion est invalide, que le respawn a été désactivé (`--no-respawn`), ou que le plafond de 10 respawns consécutifs a été atteint.
 - `error` avec « abandon après N reconnexion(s) » : lis l'erreur affichée et `zoombots logs`.
 
 ## Pas de son dans la réunion
-Vérifie que le bot est `in_meeting`, que le micro n'est pas coupé (🎤 dans le panneau du bot), et que `ffmpeg` lit le fichier (`ffmpeg -i fichier -f null -`). Les erreurs de lecture sont dans `zoombots logs` (« lecture en échec »). Le son n'est pas validé de bout en bout : [Tests et validation](testing.md).
+Vérifie que le bot est `in_meeting`, que le micro n'est pas coupé (🎤 dans le panneau du bot), et que `ffmpeg` lit le fichier (`ffmpeg -i fichier -f null -`). zoombots neutralise automatiquement la réduction de bruit de Zoom et active le Son d'origine pour éviter les coupures audio ([Audio](audio.md#désactivation-de-la-réduction-de-bruit-et-son-dorigine)). Les erreurs de lecture sont dans `zoombots logs` (« lecture en échec »). Le son n'est pas validé de bout en bout : [Tests et validation](testing.md).
 
 ## « bouton micro introuvable ou inutilisable »
 Zoom n'a pas affiché sa barre d'outils ou a changé le libellé du bouton. Capture d'écran du bot pour voir où il en est.
@@ -55,4 +55,4 @@ yt-dlp est peut-être périmé : `.venv/bin/pip install -U yt-dlp`. Vérifie aus
 
 ## Voir aussi
 
-[Installation](installation.md) · [Configuration](configuration.md) · [Limitations connues](known-limitations.md)
+[Installation](installation.md) · [Furtivité et anti-ban](anti-ban.md) · [Configuration](configuration.md) · [Limitations connues](known-limitations.md)

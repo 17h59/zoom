@@ -23,9 +23,9 @@ CLI `zoombots` ──HTTP──►  API admin + dashboard (/admin)           │
 | Fichier | Rôle |
 |---|---|
 | `zoombots/meeting.py` | `Meeting`, `parse_meeting` : ID ou lien Zoom, liste blanche de domaines ([détail](bot-lifecycle.md#domaines-zoom)) |
-| `zoombots/bot.py` | `Bot` : connexion, surveillance, reconnexion, micro, lecture ([détail](bot-lifecycle.md)) |
+| `zoombots/bot.py` | `Bot` : connexion, surveillance, reconnexion, micro, lecture, furtivité et son d'origine ([détail](bot-lifecycle.md), [furtivité](anti-ban.md)) |
 | `zoombots/audio.py` | `VirtualMic` : modules PulseAudio, pipeline de lecture ([détail](audio.md)) |
-| `zoombots/manager.py` | `BotManager` : registre, driver Playwright partagé, persistance (le fichier d'état n'est réécrit que si la liste d'administration change), plafond global |
+| `zoombots/manager.py` | `BotManager` : registre, driver Playwright partagé, respawn sur ban ([détail](anti-ban.md#remplacement-automatique-après-expulsion-respawn-on-ban)), persistance, plafond global |
 | `zoombots/state.py` | Persistance JSON atomique des bots d'administration |
 | `zoombots/stats.py` | RAM et CPU par bot, lus dans `/proc` |
 | `zoombots/sessions.py` | Sessions du GUI : bots, sons, actions, présence, quotas ([détail](sessions.md)) |
@@ -45,6 +45,7 @@ CLI `zoombots` ──HTTP──►  API admin + dashboard (/admin)           │
 ## Choix techniques
 
 - **Un process Chromium par bot.** `PULSE_SOURCE` est fixé au lancement du navigateur : un Chromium partagé partagerait un seul micro. La mutualisation se fait au niveau du conteneur (un PulseAudio, plusieurs bots), pas du navigateur ; le coût reste linéaire. Chromium est allégé : sans GPU, sans sortie audio, fenêtre 800×600.
+- **Furtivité sous Xvfb** : pour éviter la détection du mode headless par Zoom, Chromium tourne par défaut en mode fenêtré sous un serveur X virtuel Xvfb avec suppression des drapeaux d'automatisation ([Furtivité et anti-ban](anti-ban.md#furtivité-maximale-stealth)).
 - **`ffmpeg | paplay`** plutôt que `ffmpeg -f pulse` : le muxer pulse perd la fin du flux, `paplay` vide son buffer. Voir [Audio](audio.md).
 - **Le bot possède sa tâche asyncio** (`Bot.start`, `Bot.leave`) : annuler un bot en pleine connexion ne laisse ni navigateur ni module PulseAudio.
 - **Écriture de l'état groupée** : plusieurs changements dans le même tour de boucle donnent une seule écriture. `shutdown` fige la liste : les bots actifs sont relancés au prochain démarrage.
@@ -53,4 +54,4 @@ CLI `zoombots` ──HTTP──►  API admin + dashboard (/admin)           │
 
 ## Voir aussi
 
-[Cycle de vie d'un bot](bot-lifecycle.md) · [Sessions](sessions.md) · [Sécurité](security.md) · [Configuration](configuration.md)
+[Cycle de vie d'un bot](bot-lifecycle.md) · [Furtivité et anti-ban](anti-ban.md) · [Sessions](sessions.md) · [Sécurité](security.md) · [Configuration](configuration.md)

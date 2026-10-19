@@ -142,6 +142,7 @@ def test_cli_gui_reuses_running_local_server(monkeypatch, capsys, tmp_path):
 
 def test_cli_server_start_with_domain(monkeypatch, capsys):
     calls = {}
+    monkeypatch.setattr(cli, "_pid", lambda: None)
     monkeypatch.setattr(cli, "_start_server", lambda host, port, env, headed=False: calls.update(host=host, port=port, env=env) or 7)
     monkeypatch.setattr(cli, "_start_caddy", lambda cfg: calls.update(caddy=cfg["domain"]))
     assert cli.main(["server", "start", "--domain", "bots.example.fr", "--code", "sesame-123", "--proxy", "http://p.example:1"]) == 0
@@ -158,6 +159,7 @@ def test_cli_server_start_with_domain(monkeypatch, capsys):
 
 def test_cli_server_start_without_domain_and_warns_about_ip(monkeypatch, capsys):
     calls = {}
+    monkeypatch.setattr(cli, "_pid", lambda: None)
     monkeypatch.setattr(cli, "_start_server", lambda host, port, env, headed=False: calls.update(host=host, env=env) or 7)
     monkeypatch.setattr(deploy, "public_ip", lambda proxy=None: "203.0.113.10")
     assert cli.main(["server", "start"]) == 0
@@ -165,7 +167,8 @@ def test_cli_server_start_without_domain_and_warns_about_ip(monkeypatch, capsys)
     assert calls["host"] == "0.0.0.0" and "http://203.0.113.10:8000/" in out and "Aucun proxy" in out and "--domain" in out
 
 
-def test_cli_server_start_rejects_bad_domain(capsys):
+def test_cli_server_start_rejects_bad_domain(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_pid", lambda: None)
     assert cli.main(["server", "start", "--domain", "pas un domaine"]) == 1
     assert "invalide" in capsys.readouterr().err
 

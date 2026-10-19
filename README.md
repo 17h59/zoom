@@ -1,6 +1,6 @@
 # zoom
 
-Lance des bots sur le client web de Zoom et pilote-les depuis une interface web ou en ligne de commande : rejoindre une réunion, jouer des sons (fichiers ou YouTube), répéter une action.
+Lance des bots sur le client web de Zoom et pilote-les depuis une interface web ou en ligne de commande : rejoindre une réunion, jouer des sons (fichiers ou YouTube), répéter une action, furtivité maximale et remplacement automatique en cas d'expulsion.
 
 ## Démarrage rapide (chez toi)
 
@@ -62,4 +62,4 @@ Le parcours de connexion sur un vrai Zoom, le son reçu dans la réunion, le té
 
 ## Documentation
 
-Tout est détaillé dans [docs/README.md](docs/README.md) : [installation](docs/installation.md), [GUI](docs/gui.md), [CLI](docs/cli.md), [serveur partagé](docs/server.md), [nom de domaine](docs/domain.md), [masquer l'IP](docs/privacy-ip.md), [sécurité](docs/security.md), [dépannage](docs/troubleshooting.md).
+Tout est détaillé dans [docs/README.md](docs/README.md) : [installation](docs/installation.md), [GUI](docs/gui.md), [CLI](docs/cli.md), [serveur partagé](docs/server.md), [nom de domaine](docs/domain.md), [masquer l'IP](docs/privacy-ip.md), [furtivité et anti-ban](docs/anti-ban.md), [sécurité](docs/security.md), [dépannage](docs/troubleshooting.md).

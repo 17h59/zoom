@@ -23,6 +23,16 @@ Chaque bot a un **micro virtuel** PulseAudio ; le navigateur du bot l'utilise co
 - Une lecture en échec (fichier corrompu…) est consignée avec la fin de la sortie d'erreur de ffmpeg ; `play_wait` lève alors une erreur et une [action](gui.md#3-action) la compte comme un échec.
 - `VirtualMic.playing` reste vrai tant que `paplay` vide son buffer, ce qui correspond à du son encore en cours.
 
+## Désactivation de la réduction de bruit et son d'origine
+
+Par défaut, Zoom applique un algorithme agressif d'annulation de bruit et de suppression des bruits de fond qui étouffe, tronque ou atténue les sons du soundboard (musiques, jingles, voix).
+
+zoombots neutralise ces traitements par trois mécanismes simultanés (`ZOOMBOTS_DISABLE_DENOISE=1`, voir [Configuration](configuration.md)) :
+
+1. **Suppression des contraintes 3A WebRTC** : interception au niveau du navigateur (`getUserMedia` et `MediaStreamTrack.applyConstraints`) pour forcer `echoCancellation`, `noiseSuppression` et `autoGainControl` à `false` (y compris les variantes `googEchoCancellation`, `googNoiseSuppression`, `googAutoGainControl`, `googHighpassFilter`, etc.).
+2. **Patch des SDK internes Zoom** : interception des modules JavaScript de Zoom (`easyStore`, `JsMediaSDK_Instance` / `Notify_MeidaSDK`) pour verrouiller le mode audio sur `originalSound`, activer la haute fidélité stéréo et court-circuiter le débruitage navigateur.
+3. **Bouton « Son d'origine »** : dès l'admission dans la réunion, le bot clique automatiquement sur le bouton de l'interface Zoom (*« Turn on Original Sound »* ou *« Activer le son d'origine »*) s'il est présent.
+
 ## Sons disponibles
 
 - **Dossier `sounds/`** du serveur (`ZOOMBOTS_SOUNDS`) : extensions mp3, wav, ogg, flac, m4a, opus. Noms validés : pas de séparateur de chemin, pas de caractère nul, extension obligatoire.
@@ -47,4 +57,4 @@ Les commandes suivantes de la CLI doivent être lancées avec les mêmes variabl
 
 ## Voir aussi
 
-[Cycle de vie d'un bot](bot-lifecycle.md) · [Architecture](architecture.md) · [Dépannage](troubleshooting.md#pas-de-son-dans-la-réunion)
+[Cycle de vie d'un bot](bot-lifecycle.md) · [Furtivité et anti-ban](anti-ban.md) · [Architecture](architecture.md) · [Dépannage](troubleshooting.md#pas-de-son-dans-la-réunion)

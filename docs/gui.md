@@ -15,7 +15,9 @@ Si le serveur exige un **code d'accès** (`ZOOMBOTS_ACCESS_CODE`), une fenêtre 
 - **Nombre** et **mode de répartition** :
   - *répartis sur les liens* : le nombre est le total, partagé équitablement (10 bots sur 3 liens donnent 4, 3 et 3 ; le reste va aux premiers liens) ;
   - *par lien* : le nombre est celui de chaque lien (3 liens × 2 = 6 bots).
-- **Reconnexion auto** : un bot dont le navigateur ou la connexion tombe se reconnecte ; une expulsion confirmée ou une fin de réunion non ([détail](bot-lifecycle.md#reconnexion)).
+- **Reconnexion auto** : un bot dont le navigateur ou la connexion tombe se reconnecte ; une fin de réunion arrête le bot ([détail](bot-lifecycle.md#reconnexion)).
+- **Furtivité & anti-ban** : activés d'office. Mode fenêtré sous Xvfb pour éviter l'empreinte Headless, masquage des indicateurs d'automatisation, et respawn automatique d'un remplaçant tout neuf si l'hôte expulse un bot ([détail](anti-ban.md)).
+- **Son haute-fidélité** : la réduction de bruit Zoom est coupée et le Son d'origine activé pour chaque bot ([détail](audio.md#désactivation-de-la-réduction-de-bruit-et-son-dorigine)).
 
 ### 2. Sons
 
@@ -53,4 +55,4 @@ Le navigateur garde un WebSocket ouvert. S'il reste coupé plus de **15 secondes
 
 ## Voir aussi
 
-[Sessions](sessions.md) · [Limites et quotas](limits.md) · [API du GUI](api.md#api-du-gui) · [Cycle de vie d'un bot](bot-lifecycle.md)
+[Sessions](sessions.md) · [Furtivité et anti-ban](anti-ban.md) · [Limites et quotas](limits.md) · [API du GUI](api.md#api-du-gui) · [Cycle de vie d'un bot](bot-lifecycle.md)

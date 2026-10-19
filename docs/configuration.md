@@ -47,6 +47,9 @@ Tout se règle par variables d'environnement (`ZOOMBOTS_*`). Les commandes `zoom
 | `ZOOMBOTS_WATCH_INTERVAL` | `3` | Période de surveillance (s) |
 | `ZOOMBOTS_MAX_RECONNECTS` | `3` | Reconnexions consécutives |
 | `ZOOMBOTS_STABLE_SESSION` | `60` | Durée d'une session « stable » (s) |
+| `ZOOMBOTS_RESPAWN_ON_BAN` | `1` | `1` : tue et remplace automatiquement un bot expulsé par l'hôte ([détail](anti-ban.md#remplacement-automatique-après-expulsion-respawn-on-ban)) |
+| `ZOOMBOTS_MAX_RESPAWNS` | `10` | Nombre maximal de respawns consécutifs après expulsion |
+| `ZOOMBOTS_DISABLE_DENOISE` | `1` | `1` : désactive la réduction de bruit Zoom et active le son d'origine ([détail](audio.md#désactivation-de-la-réduction-de-bruit-et-son-dorigine)) |
 | `ZOOMBOTS_EXTRA_DOMAINS` | aucun | Domaines Zoom d'entreprise acceptés dans les liens |
 | `ZOOMBOTS_SANDBOX` | `1` hors root, `0` en root | Sandbox de Chromium ([Sécurité](security.md#chromium-et-son-sandbox)) ; `0` dans l'image Docker |
 | `ZOOMBOTS_HEADED` | `0` | `1` : Chromium non headless (sous `xvfb-run`) |
@@ -66,4 +69,4 @@ Le répertoire de configuration du serveur partagé est `~/.config/zoombots` (ou
 
 ## Voir aussi
 
-[Modes de lancement](modes.md) · [Limites et quotas](limits.md) · [Masquer l'IP](privacy-ip.md)
+[Modes de lancement](modes.md) · [Furtivité et anti-ban](anti-ban.md) · [Limites et quotas](limits.md) · [Masquer l'IP](privacy-ip.md)

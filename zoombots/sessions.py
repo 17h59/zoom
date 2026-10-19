@@ -216,7 +216,8 @@ class Session:
                 return b
         raise SessionError(f"bot {bot_id} inconnu", 404)
 
-    def deploy(self, links: list[dict], count: int, mode: str, name: str, auto_reconnect: bool) -> list[Bot]:
+    def deploy(self, links: list[dict], count: int, mode: str, name: str, auto_reconnect: bool,
+               respawn_on_ban: bool = True) -> list[Bot]:
         if self._closed:
             raise SessionError("session terminée", 410)
         if not 1 <= len(links) <= MAX_LINKS:
@@ -242,7 +243,7 @@ class Session:
                 raise SessionError(f"limite de {IP_MAX_BOTS} bots par adresse IP ({used} actifs)", 429)
         if total > self.manager.capacity_left():
             raise SessionError(f"le serveur est plein : {self.manager.capacity_left()} place(s) libre(s) "
-                               f"sur {mgr_max()} (ZOOMBOTS_MAX_BOTS)", 429)
+                                f"sur {mgr_max()} (ZOOMBOTS_MAX_BOTS)", 429)
         created: list[Bot] = []
         index = 0
         try:
@@ -251,7 +252,7 @@ class Session:
                     continue
                 names = [name if total == 1 else f"{name} {index + k + 1}" for k in range(n)]
                 index += n
-                created += self.manager.spawn(meeting, names, auto_reconnect, owner=self.id)
+                created += self.manager.spawn(meeting, names, auto_reconnect, owner=self.id, respawn_on_ban=respawn_on_ban)
         except OverflowError as exc:
             raise SessionError(str(exc), 429) from exc
         return created

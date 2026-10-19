@@ -133,3 +133,77 @@ def test_state_file_is_private_and_corrupt_file_is_kept(tmp_path):
     p.write_text("not json")
     assert state.load(p) == []
     assert (tmp_path / "s.bak").read_text() == "not json"
+
+
+async def test_banned_bot_is_killed_and_respawns_replacement(manager, monkeypatch):
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(d, *args, **kwargs):
+        if d == 1.0:
+            return await real_sleep(0.01)
+        return await real_sleep(d, *args, **kwargs)
+
+    monkeypatch.setattr(mgr.asyncio, "sleep", fast_sleep)
+
+    m = manager()
+    await m.start()
+    [bot] = m.spawn(Meeting("123456789", "pw123"), ["Bot Alpha"], owner="session42")
+    await asyncio.sleep(0.01)
+    assert bot.id in m.bots
+
+    bot._banned = True
+    bot._set_status("denied", "l'hôte vous a exclu de la réunion")
+
+    await asyncio.sleep(0.05)
+
+    assert bot.id not in m.bots
+    assert bot._closing is True
+    assert len(m.bots) == 1
+
+    replacement = list(m.bots.values())[0]
+    assert replacement.id != bot.id
+    assert replacement.meeting.id == "123456789"
+    assert replacement.meeting.passcode == "pw123"
+    assert replacement.name == "Bot Alpha"
+    assert replacement.owner == "session42"
+    assert replacement.respawns == 1
+    assert replacement.respawn_on_ban is True
+
+    await m.shutdown()
+
+
+async def test_banned_bot_respawn_disabled(manager, monkeypatch):
+    m = manager()
+    await m.start()
+    [bot] = m.spawn(Meeting("123456789"), ["Bot Beta"], respawn_on_ban=False)
+    await asyncio.sleep(0.01)
+    bot._banned = True
+    bot._set_status("denied", "l'hôte vous a exclu de la réunion")
+    await asyncio.sleep(0.02)
+    assert len(m.bots) == 1
+    assert m.bots[bot.id].status == "denied"
+    await m.shutdown()
+
+
+async def test_banned_bot_max_respawns_limit(manager, monkeypatch):
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(d, *args, **kwargs):
+        if d == 1.0:
+            return await real_sleep(0.01)
+        return await real_sleep(d, *args, **kwargs)
+
+    monkeypatch.setattr(mgr.asyncio, "sleep", fast_sleep)
+
+    m = manager()
+    await m.start()
+    [bot] = m.spawn(Meeting("123456789"), ["Bot Gamma"])
+    await asyncio.sleep(0.01)
+    bot.respawns = mgr.MAX_RESPAWNS
+    bot._banned = True
+    bot._set_status("denied", "The host has removed you from this meeting")
+    await asyncio.sleep(0.05)
+    assert len(m.bots) == 1
+    assert m.bots[bot.id].status == "denied"
+    assert m.bots[bot.id].respawns == mgr.MAX_RESPAWNS
+    await m.shutdown()

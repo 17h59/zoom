@@ -10,7 +10,7 @@
 | `in_meeting` | Dans la réunion, audio par ordinateur activé |
 | `reconnecting` | Navigateur ou page fermés, ou connexion échouée : nouvelle tentative en attente |
 | `ended` | La réunion est terminée |
-| `denied` | Refus d'admission, expulsion confirmée ou réunion invalide |
+| `denied` | Refus d'admission, expulsion confirmée ou réunion invalide (déclenche un respawn automatique si expulsé) |
 | `error` | Échec définitif (reconnexions épuisées, reconnexion désactivée, proxy exigé et absent…) |
 | `left` | Retiré par l'utilisateur |
 
@@ -18,9 +18,9 @@ Un bot **terminé** (`ended`, `denied`, `error`, `left`) ne compte plus dans les
 
 ## Connexion
 
-1. Lancement de Chromium (avec son [sandbox](security.md#chromium-et-son-sandbox) quand c'est possible) avec le micro virtuel du bot, le [proxy](privacy-ip.md) éventuel et une locale `en-US` forcée (les libellés de Zoom sont ceux de l'interface anglaise ; les libellés français restent reconnus en secours).
+1. Lancement de Chromium (avec son [sandbox](security.md#chromium-et-son-sandbox) quand c'est possible) avec le micro virtuel du bot, le [proxy](privacy-ip.md) éventuel, le mode fenêtré sous Xvfb par défaut pour la furtivité ([Furtivité et anti-ban](anti-ban.md#furtivité-maximale-stealth)), la désactivation du traitement audio 3A ([Audio](audio.md#désactivation-de-la-réduction-de-bruit-et-son-dorigine)) et une locale `en-US` forcée (les libellés de Zoom sont ceux de l'interface anglaise ; les libellés français restent reconnus en secours).
 2. Chargement de la page de connexion, bandeau cookies accepté, nom et passcode saisis, clic sur Join.
-3. **Attente d'admission** (jusqu'à `ZOOMBOTS_ADMIT_TIMEOUT`, 600 s) : le bot distingue salle d'attente, refus, fin de réunion et entrée réelle. Dès que le bouton « audio par ordinateur » apparaît, il le clique.
+3. **Attente d'admission** (jusqu'à `ZOOMBOTS_ADMIT_TIMEOUT`, 600 s) : le bot distingue salle d'attente, refus, fin de réunion et entrée réelle. Dès que le bouton « audio par ordinateur » apparaît, il le clique et active le Son d'origine si disponible.
 
 Le plafond `ZOOMBOTS_MAX_JOINS` ne couvre que les étapes 1 et 2 : l'attente en salle d'attente ne bloque pas les autres bots.
 
@@ -34,14 +34,25 @@ Une boucle (`ZOOMBOTS_WATCH_INTERVAL`, 3 s) vérifie que le navigateur et la pag
 
 ## Reconnexion
 
-Quand le navigateur ou la page se ferme, ou que la connexion échoue (y compris le délai d'admission), et si la reconnexion automatique est active. Une **expulsion confirmée** (`denied`) ou une **fin de réunion** (`ended`) ne se reconnecte **pas** :
+Quand le navigateur ou la page se ferme, ou que la connexion échoue (y compris le délai d'admission), et si la reconnexion automatique est active. Une **fin de réunion** (`ended`) ou une réunion invalide ne se reconnecte pas :
 
 - attente croissante : 2, 4, 8… 30 secondes ;
 - `ZOOMBOTS_MAX_RECONNECTS` tentatives consécutives (3), puis statut `error` ;
 - le compteur ne repart de zéro qu'après une **session stable** (`ZOOMBOTS_STABLE_SESSION`, 60 s) : une boucle connexion/coupure immédiate s'arrête donc ;
-- aucune reconnexion si la réunion est finie ou l'admission refusée ;
+- aucune reconnexion si la réunion est finie ou l'ID invalide ;
 - chaque reconnexion relance Chromium et prend le **proxy suivant** s'il y en a plusieurs ([Masquer l'IP](privacy-ip.md#plusieurs-proxies--une-ip-par-bot)) ;
 - le délai d'admission (`ZOOMBOTS_ADMIT_TIMEOUT`) s'applique à chaque tentative : l'attente totale peut atteindre `(1 + ZOOMBOTS_MAX_RECONNECTS) × 600 s` avant `error` (600 s seulement sans reconnexion).
+
+## Expulsion et remplacement automatique (Respawn on ban)
+
+Lorsqu'un hôte expulse un bot, Zoom verrouille son empreinte de session : une reconnexion sur la même page est systématiquement refusée. zoombots applique un mécanisme de respawn :
+
+1. Le bot banni est immédiatement tué (`leave()`, fermeture de son Chromium et destruction de son micro virtuel).
+2. Sa place est aussitôt libérée du gestionnaire.
+3. Un nouveau bot remplaçant spawn automatiquement avec un contexte Chromium vierge, le même nom et les mêmes identifiants de réunion.
+4. Un garde-fou (`ZOOMBOTS_MAX_RESPAWNS`, défaut 10) limite les remplacements consécutifs pour éviter les boucles infinies.
+
+Voir les détails complets dans [Furtivité et anti-ban](anti-ban.md#remplacement-automatique-après-expulsion-respawn-on-ban).
 
 ## Micro et sons
 
@@ -64,4 +75,4 @@ Le lien fourni détermine l'hôte du client web (`https://<hôte>/wc/join/<id>`)
 
 ## Voir aussi
 
-[Audio](audio.md) · [Sessions](sessions.md) · [Masquer l'IP](privacy-ip.md) · [Dépannage](troubleshooting.md#un-bot-reste-bloqué)
+[Furtivité et anti-ban](anti-ban.md) · [Audio](audio.md) · [Sessions](sessions.md) · [Masquer l'IP](privacy-ip.md) · [Dépannage](troubleshooting.md#un-bot-reste-bloqué)

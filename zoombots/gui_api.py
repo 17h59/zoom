@@ -33,6 +33,7 @@ class DeployRequest(BaseModel):
     mode: str = "split"  # split : `count` bots répartis sur les liens ; each : `count` bots par lien
     name: str = Field("Bot", min_length=1, max_length=60)
     auto_reconnect: bool = True
+    respawn_on_ban: bool = True
 
 
 class ActionRequest(BaseModel):
@@ -127,7 +128,7 @@ def build_router(sessions: S.SessionManager, host_ok: Callable[[str], bool]) -> 
     async def deploy(req: DeployRequest, x_session: str | None = Header(None)):
         session = current(x_session)
         try:
-            bots = session.deploy([l.model_dump() for l in req.links], req.count, req.mode, req.name, req.auto_reconnect)
+            bots = session.deploy([l.model_dump() for l in req.links], req.count, req.mode, req.name, req.auto_reconnect, req.respawn_on_ban)
         except S.SessionError as exc:
             fail(exc)
         return {"bots": [b.id for b in bots]}

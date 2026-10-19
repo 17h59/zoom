@@ -268,7 +268,8 @@ def cmd_gui(args) -> int:
                     net.parse_proxy(part)
             except ValueError as exc:
                 raise CliError(str(exc)) from exc
-        pid = _start_server("127.0.0.1", port, deploy.local_env(port, cfg_proxy), args.headed)
+        headed = args.headed if args.headed is not None else bool(shutil.which("xvfb-run"))
+        pid = _start_server("127.0.0.1", port, deploy.local_env(port, cfg_proxy), headed)
         print(f"Interface locale lancée (pid {pid}) : {url}")
         print("Fermer l'onglet retire ses bots. `zoombots shutdown` arrête tout.")
         if not cfg_proxy:
@@ -350,7 +351,9 @@ def cmd_server_start(args) -> int:
     except deploy.DeployError as exc:
         raise CliError(str(exc)) from exc
     _stop_caddy()  # un Caddy résiduel (par exemple d'un lancement avec domaine) ne doit pas survivre à --no-domain
-    pid = _start_server("127.0.0.1" if cfg.get("domain") else "0.0.0.0", cfg["port"], deploy.server_env(cfg))
+    headed = args.headed if getattr(args, "headed", None) is not None else bool(shutil.which("xvfb-run"))
+    pid = _start_server("127.0.0.1" if cfg.get("domain") else "0.0.0.0", cfg["port"], deploy.server_env(cfg),
+                        headed)
     if cfg.get("domain"):
         try:
             _start_caddy(cfg)
@@ -491,7 +494,8 @@ def cmd_logs(args) -> int:
 
 def cmd_spawn(args) -> int:
     bots = call("POST", "/bots", {"meeting": args.meeting, "passcode": args.passcode, "name": args.name,
-                                  "count": args.count, "auto_reconnect": not args.no_reconnect})
+                                  "count": args.count, "auto_reconnect": not args.no_reconnect,
+                                  "respawn_on_ban": not getattr(args, "no_respawn", False)})
     table(bots, ["id", "name", "meeting", "status"])
     return wait_for(args.wait, [b["id"] for b in bots]) if args.wait else 0
 
@@ -604,7 +608,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int, help="port (défaut 8000)")
     sp.add_argument("--proxy", help="proxy de sortie des bots (masque l'IP de cette machine)")
     sp.add_argument("--no-open", action="store_true", help="n'ouvre pas le navigateur")
-    sp.add_argument("--headed", action="store_true")
+    sp.add_argument("--headed", dest="headed", action="store_true", default=None, help="Chromium non headless sous xvfb (par défaut si xvfb-run est disponible)")
+    sp.add_argument("--headless", dest="headed", action="store_false", help="force le mode headless sans xvfb")
     srv = sub.add_parser("server", help="serveur partagé pour plusieurs utilisateurs (avec ou sans nom de domaine)")
     ssub = srv.add_subparsers(dest="server_cmd", required=True)
     sp = ssub.add_parser("start", help="configure et lance le serveur (HTTPS automatique avec --domain)")
@@ -617,6 +622,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reset-secrets", action="store_true", help="génère un nouveau code d'accès et un nouveau jeton")
     sp.add_argument("--port", type=int, help="port de l'application (défaut 8000)")
     sp.add_argument("--email", help="e-mail pour Let's Encrypt (avis d'expiration)")
+    sp.add_argument("--headed", dest="headed", action="store_true", default=None, help="Chromium non headless sous xvfb (par défaut si xvfb-run est disponible)")
+    sp.add_argument("--headless", dest="headed", action="store_false", help="force le mode headless sans xvfb")
     sp = ssub.add_parser("dns", help="affiche l'enregistrement DNS à créer et vérifie qu'il est en place")
     sp.set_defaults(fn=cmd_server_dns)
     sp.add_argument("--domain")
@@ -639,6 +646,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-n", "--name", default="Bot")
     sp.add_argument("-c", "--count", type=int, default=1)
     sp.add_argument("--no-reconnect", action="store_true")
+    sp.add_argument("--no-respawn", action="store_true", help="ne recrée pas de bot en cas d'expulsion")
     sp.add_argument("--wait", type=int, metavar="SEC", help="attend que les bots soient connectés")
     sp = add("list", cmd_list, "liste les bots")
     sp.add_argument("--json", action="store_true")

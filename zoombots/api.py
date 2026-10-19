@@ -199,6 +199,7 @@ class SpawnRequest(BaseModel):
     name: str = Field("Bot", min_length=1, max_length=60)
     count: int = Field(1, ge=1, le=20)
     auto_reconnect: bool = True
+    respawn_on_ban: bool = True
 
 
 class PlayRequest(BaseModel):
@@ -245,7 +246,7 @@ async def spawn(req: SpawnRequest):
         raise HTTPException(422, str(exc)) from exc
     names = [req.name] if req.count == 1 else [f"{req.name} {i + 1}" for i in range(req.count)]
     try:
-        return [b.to_dict() for b in manager.spawn(meeting, names, req.auto_reconnect)]
+        return [b.to_dict() for b in manager.spawn(meeting, names, req.auto_reconnect, respawn_on_ban=req.respawn_on_ban)]
     except OverflowError as exc:
         raise HTTPException(429, str(exc)) from exc
 

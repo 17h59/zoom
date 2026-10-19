@@ -636,7 +636,8 @@ def test_server_config_is_saved_only_after_a_successful_start(monkeypatch):
     assert deploy.load_config() == {}  # `server info` ne montrera pas un code qui n'est pas celui du serveur
 
 
-def test_weak_code_is_refused_by_the_cli(capsys):
+def test_weak_code_is_refused_by_the_cli(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_pid", lambda: None)
     assert cli.main(["server", "start", "--code", "123"]) == 1
     assert "trop faible" in capsys.readouterr().err
 
