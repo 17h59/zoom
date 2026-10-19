@@ -86,7 +86,7 @@ Linux uniquement (Docker éventuel). Aucune compatibilité macOS/Windows n'est v
 | **Observabilité** | Logs structurés, captures d'écran en cas d'erreur | Les erreurs se limitent à un message texte dans le dashboard. |
 | **Tests automatisés et revue hostile** | Détecter les bugs de concurrence, de nettoyage et d'architecture | Aucune suite de tests, et la revue n'a pas été lancée. |
 
-Non implémentés et sans conséquence technique supplémentaire : garde-fous (limite de bots, marquage visible, arrêt global), repoussés à la demande de l'utilisateur.
+Non implémentés pour le moment.
 
 ## Bugs connus
 
