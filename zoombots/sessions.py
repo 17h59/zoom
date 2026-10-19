@@ -14,6 +14,7 @@ import shutil
 import sys
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -28,7 +29,12 @@ logger = logging.getLogger("zoombots.sessions")
 ROOT = Path(DATA_DIR) / "sessions"
 GRACE_S = float(os.environ.get("ZOOMBOTS_SESSION_GRACE", "15"))
 NEVER_CONNECTED_S = 30.0  # session créée mais jamais attachée à un WebSocket
+LOCAL = os.environ.get("ZOOMBOTS_MODE") == "local"  # GUI lancé chez soi : pas de plafonds par adresse IP
 MAX_SESSIONS = int(os.environ.get("ZOOMBOTS_MAX_SESSIONS", "20"))
+# Plafonds par adresse IP cliente (0 = illimité). Contre un utilisateur qui ouvrirait beaucoup d'onglets.
+IP_MAX_SESSIONS = int(os.environ.get("ZOOMBOTS_IP_MAX_SESSIONS", "0" if LOCAL else "3"))
+IP_MAX_BOTS = int(os.environ.get("ZOOMBOTS_IP_MAX_BOTS", "0" if LOCAL else "10"))
+IP_SESSIONS_PER_MINUTE = int(os.environ.get("ZOOMBOTS_IP_SESSIONS_PER_MINUTE", "0" if LOCAL else "10"))
 SESSION_MAX_BOTS = int(os.environ.get("ZOOMBOTS_SESSION_MAX_BOTS", "10"))
 MAX_UPLOAD_BYTES = int(float(os.environ.get("ZOOMBOTS_MAX_UPLOAD_MB", "25")) * 1024 * 1024)
 MAX_SOUNDS = int(os.environ.get("ZOOMBOTS_SESSION_MAX_SOUNDS", "20"))
@@ -136,9 +142,11 @@ def ytdlp_command() -> list[str]:
 
 
 class Session:
-    def __init__(self, sid: str, manager: BotManager):
+    def __init__(self, sid: str, manager: BotManager, ip: str = "", registry: "SessionManager | None" = None):
         self.id = sid
         self.manager = manager
+        self.ip = ip
+        self.registry = registry
         self.created = time.monotonic()
         self.connections = 0
         self.disconnected_at: float | None = None
@@ -198,6 +206,10 @@ class Session:
         active = [b for b in self.bots if not b.finished]
         if len(active) + total > SESSION_MAX_BOTS:
             raise SessionError(f"limite de {SESSION_MAX_BOTS} bots par session ({len(active)} actifs)", 429)
+        if IP_MAX_BOTS and self.registry:
+            used = self.registry.active_bots(self.ip)
+            if used + total > IP_MAX_BOTS:
+                raise SessionError(f"limite de {IP_MAX_BOTS} bots par adresse IP ({used} actifs)", 429)
         created: list[Bot] = []
         index = 0
         try:
@@ -446,6 +458,7 @@ class SessionManager:
         self.manager = manager
         self.sessions: dict[str, Session] = {}
         self._reaper: asyncio.Task | None = None
+        self._creations: dict[str, deque] = {}  # horodatages de création de sessions, par IP
 
     async def start(self) -> None:
         shutil.rmtree(ROOT, ignore_errors=True)  # fichiers d'une exécution précédente
@@ -458,11 +471,29 @@ class SessionManager:
         await asyncio.gather(*(s.destroy() for s in list(self.sessions.values())), return_exceptions=True)
         self.sessions.clear()
 
-    def create(self) -> Session:
+    def active_bots(self, ip: str) -> int:
+        return sum(1 for s in self.sessions.values() if s.ip == ip for b in s.bots if not b.finished)
+
+    def _check_ip(self, ip: str) -> None:
+        if IP_MAX_SESSIONS and sum(1 for s in self.sessions.values() if s.ip == ip) >= IP_MAX_SESSIONS:
+            raise SessionError(f"limite de {IP_MAX_SESSIONS} sessions par adresse IP", 429)
+        if IP_SESSIONS_PER_MINUTE:
+            now = time.monotonic()
+            recent = self._creations.setdefault(ip, deque())
+            while recent and now - recent[0] > 60:
+                recent.popleft()
+            if len(recent) >= IP_SESSIONS_PER_MINUTE:
+                raise SessionError("trop de sessions créées, réessaie dans une minute", 429)
+            recent.append(now)
+        for key in [k for k, q in self._creations.items() if not q]:  # ne pas laisser grossir la table
+            del self._creations[key]
+
+    def create(self, ip: str = "") -> Session:
         if len(self.sessions) >= MAX_SESSIONS:
             raise SessionError(f"serveur complet ({MAX_SESSIONS} sessions)", 503)
+        self._check_ip(ip)
         sid = secrets.token_urlsafe(24)
-        self.sessions[sid] = Session(sid, self.manager)
+        self.sessions[sid] = Session(sid, self.manager, ip, self)
         return self.sessions[sid]
 
     def get(self, sid: str | None) -> Session:

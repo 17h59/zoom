@@ -12,5 +12,8 @@ services:
       # GUI public : code d'accès des utilisateurs et nom de domaine servi (derrière un proxy TLS)
       ZOOMBOTS_ACCESS_CODE: ${ZOOMBOTS_ACCESS_CODE:-}
       ZOOMBOTS_ALLOWED_HOSTS: ${ZOOMBOTS_ALLOWED_HOSTS:-}
+      ZOOMBOTS_PUBLIC_ONLY: "1"
+      ZOOMBOTS_PROXY: ${ZOOMBOTS_PROXY:-}
+      ZOOMBOTS_REQUIRE_PROXY: ${ZOOMBOTS_REQUIRE_PROXY:-0}
 volumes:
   zoombots-data:

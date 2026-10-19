@@ -26,11 +26,23 @@ CLI `zoombots` ──HTTP──►  API admin + dashboard (/admin)           │
 
 ```
 ./install.sh                 # paquets système, .venv, Chromium, commande `zoombots`
-zoombots start               # serveur en arrière-plan (--headed : Chromium sous xvfb)
+zoombots gui                 # interface web chez toi, ouvre le navigateur (le plus simple)
+zoombots start               # serveur d'administration en arrière-plan (--headed : Chromium sous xvfb)
 zoombots spawn <id|lien> -c 3 --wait 120
 zoombots play son.mp3        # sur tous les bots ; -b <bot> pour un seul
 zoombots --help
 ```
+
+Trois façons de lancer l'application :
+
+| Commande | Usage | Exposition |
+|---|---|---|
+| `zoombots gui` | **Chez soi**, un seul utilisateur. Ouvre le GUI sur `http://127.0.0.1:8000/`. Pas de domaine, pas de code, pas de plafonds par IP (`ZOOMBOTS_MODE=local`). | Cette machine uniquement |
+| `zoombots server start` | **Serveur partagé** par adresse IP, sans domaine : HTTP sur le port 8000, code d'accès et jeton générés. | Tout Internet, en HTTP |
+| `zoombots server start --domain bots.monsite.fr` | **Serveur partagé avec nom de domaine** : HTTPS automatique via Caddy, l'application n'écoute que sur `127.0.0.1`. | Internet, en HTTPS, via Caddy |
+| `zoombots start` / `serve` | Serveur d'administration seul (dashboard `/admin`, API, CLI), comportement historique. | Cette machine |
+
+`install.sh --server` (ou la réponse « o » à la question posée en mode interactif) télécharge Caddy et l'autorise à utiliser les ports 80/443 sans être root (`setcap`). Un seul serveur à la fois par machine : `zoombots shutdown` arrête celui qui tourne (et Caddy).
 
 `install.sh` est idempotent, fonctionne avec ou sans `sudo` (sous `sudo`, le venv et le lien `~/.local/bin/zoombots` sont créés pour l'utilisateur appelant), prend en charge apt, dnf et pacman, et exige Python ≥ 3.11. Les bibliothèques système de Chromium ne sont installées automatiquement que sous Debian/Ubuntu.
 
@@ -51,6 +63,8 @@ La CLI ignore `http_proxy` pour parler à l'API, envoie l'en-tête `X-Zoombots` 
 | `zoombots/log.py` | Logs JSON et journal d'événements par bot. |
 | `zoombots/api.py` | API d'administration FastAPI, garde de sécurité, service du GUI (`/`) et du dashboard (`/admin`). |
 | `zoombots/sessions.py` | Sessions du GUI : bots, sons (uploads, YouTube), actions répétées, présence, expiration. |
+| `zoombots/net.py` | Proxy de sortie, durcissement WebRTC, nettoyage des IP dans les messages, IP réelle des clients. |
+| `zoombots/deploy.py` | Configuration du serveur public (domaine, secrets), Caddyfile, DNS, vérification d'IP. |
 | `zoombots/gui_api.py` | Routes `/api` et WebSocket du GUI. |
 | `zoombots/cli.py` | Interface en ligne de commande. |
 | `zoombots/static/` | GUI (`gui.html`, `gui.css`, `gui.js`) et dashboard d'administration (`index.html`, `app.js`), sans `innerHTML`. |
@@ -92,12 +106,56 @@ La CLI ignore `http_proxy` pour parler à l'API, envoie l'en-tête `X-Zoombots` 
 
 ### Déploiement sur un petit serveur
 
+`zoombots server start --domain ton.domaine` fait tout (voir « Serveur partagé, nom de domaine, adresse IP »). À la main, l'équivalent est :
+
 ```
 ZOOMBOTS_HOST=0.0.0.0 ZOOMBOTS_TOKEN=<admin> ZOOMBOTS_ACCESS_CODE=<code> \
 ZOOMBOTS_ALLOWED_HOSTS=zoom.example.com zoombots start
 ```
 
-`ZOOMBOTS_TOKEN` protège l'administration (`/admin`, API historique, CLI) ; le GUI `/` et `/api` n'en ont pas besoin. `ZOOMBOTS_ALLOWED_HOSTS` doit contenir le nom de domaine public (protection contre le DNS rebinding). Placer un proxy TLS devant (nginx, Caddy) : sans HTTPS, le code d'accès et l'identifiant de session circulent en clair ; le proxy doit transmettre les WebSockets (`Upgrade`). Compter environ 300 à 500 Mo de RAM par bot : voir `zoombots stats` pour calibrer `ZOOMBOTS_MAX_BOTS` sur la machine.
+`ZOOMBOTS_TOKEN` protège l'administration (`/admin`, API historique, CLI) ; le GUI `/` et `/api` n'en ont pas besoin. `ZOOMBOTS_ALLOWED_HOSTS` doit contenir le nom de domaine public (protection contre le DNS rebinding). Un proxy TLS devant (Caddy, installé par `install.sh --server`) est indispensable : sans HTTPS, le code d'accès et l'identifiant de session circulent en clair ; le proxy doit transmettre les WebSockets (`Upgrade`). Compter environ 300 à 500 Mo de RAM par bot : voir `zoombots stats` pour calibrer `ZOOMBOTS_MAX_BOTS` sur la machine.
+
+## Serveur partagé, nom de domaine, adresse IP
+
+### Lancer un serveur public
+
+```
+zoombots server start --domain bots.monsite.fr --proxy http://hôte:port
+zoombots server dns          # quoi créer chez le registrar, et vérification
+zoombots server info         # rappelle l'adresse, le code d'accès et le jeton
+zoombots shutdown            # arrête l'application et Caddy
+```
+
+`server start` écrit `~/.config/zoombots/server.json` (droits 0600 : code d'accès, jeton, proxy), génère le code d'accès et le jeton d'administration à la première fois et les conserve ensuite. Options : `--domain`, `--no-domain`, `--code`, `--proxy`, `--port`, `--email` (avis d'expiration Let's Encrypt).
+
+- **Sans nom de domaine** : l'application écoute sur `0.0.0.0:<port>` en HTTP, tous les noms d'hôte sont acceptés (`ZOOMBOTS_ALLOWED_HOSTS=*`). Le code d'accès circule en clair : à réserver à un essai ou un réseau de confiance.
+- **Avec un nom de domaine** : Caddy obtient et renouvelle seul le certificat HTTPS (Let's Encrypt) et relaie vers l'application, qui n'écoute que sur `127.0.0.1`. Seul ce domaine est accepté. Le Caddyfile généré (`<data>/Caddyfile`) coupe l'API d'administration de Caddy, borne la taille des envois, supprime l'en-tête `Server` et ajoute HSTS.
+
+### Brancher un nom de domaine (pas à pas)
+
+1. Chez le registrar, ajoute un **enregistrement DNS de type A** : *Nom* = `@` pour le domaine racine (`monsite.fr`) ou le sous-domaine voulu (`bots` pour `bots.monsite.fr`), *Valeur* = l'adresse IP publique du serveur. `zoombots server dns --domain bots.monsite.fr` affiche exactement cet enregistrement avec l'IP détectée, et dit si le domaine pointe déjà vers ce serveur.
+2. Ouvre les ports **80 et 443** (pare-feu, box ou hébergeur) : Let's Encrypt s'en sert.
+3. Lance `zoombots server start --domain bots.monsite.fr`. La propagation DNS peut prendre de quelques minutes à quelques heures ; tant que le domaine ne pointe pas vers le serveur, Caddy réessaie tout seul (`<data>/caddy.log`).
+
+Le domaine peut être acheté chez n'importe quel registrar : seuls l'enregistrement A et les ports comptent.
+
+### Limites par adresse IP
+
+L'adresse du client est celle de la connexion ; `X-Forwarded-For` n'est lu que si la connexion vient d'un proxy de confiance (`ZOOMBOTS_TRUSTED_PROXIES`, défaut `127.0.0.1,::1`, donc Caddy en local), en prenant la première adresse non fiable à partir de la droite : un client ne peut pas se faire passer pour une autre adresse. Plafonds (0 = illimité, tous désactivés par défaut avec `zoombots gui`) : `ZOOMBOTS_IP_MAX_SESSIONS` (3 sessions simultanées), `ZOOMBOTS_IP_MAX_BOTS` (10 bots actifs, toutes sessions confondues) et `ZOOMBOTS_IP_SESSIONS_PER_MINUTE` (10 créations de session). Dépassement : HTTP 429 avec un message lisible.
+
+### Masquer l'adresse IP du serveur
+
+Zoom (et l'hôte de la réunion) voient l'adresse d'où part le navigateur du bot. Pour que ce ne soit pas celle du serveur :
+
+- **Proxy de sortie** : `ZOOMBOTS_PROXY=http://utilisateur:motdepasse@hôte:port` (ou `--proxy` sur `gui` et `server start`). Plusieurs proxies séparés par des virgules : chaque bot sort par le suivant, en rotation, donc par une IP différente. Formats : `http://`, `https://`, `socks5://` (sans identifiants : Chromium ne gère pas l'authentification SOCKS5 ; utiliser un proxy HTTP avec identifiants, ou un tunnel local `ssh -D`). Les noms de domaine sont résolus par le proxy (pas de fuite DNS).
+- **Pas de repli sur l'IP du serveur** : dès qu'un proxy est configuré par `gui` ou `server start`, `ZOOMBOTS_REQUIRE_PROXY=1` est posé : sans proxy, un bot ne démarre pas (au lieu de sortir en direct). Un proxy injoignable fait échouer le bot, jamais sortir en direct.
+- **WebRTC et QUIC** : avec un proxy, Chromium est lancé avec `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` et `--disable-quic` (aucun flux UDP hors proxy, repli sur TCP via le proxy). Sans proxy, `default_public_interface_only` au moins ne révèle pas les adresses du réseau local.
+- **Messages d'erreur** : les adresses IPv4/IPv6, l'hôte, le port et les identifiants du proxy sont remplacés par `[ip]` / `[proxy]` dans tout ce que voit l'utilisateur (statuts, historique, erreurs d'action). Les journaux d'administration contiennent les mêmes messages nettoyés.
+- **Le serveur lui-même** : réponses sans en-tête `Server` (ni uvicorn, ni Caddy), `/api/config` ne donne aucune adresse, et l'administration (`/admin`, `/bots`, `/stats`…) répond 404 à toute requête venant d'ailleurs que la machine (`ZOOMBOTS_PUBLIC_ONLY=1`, posé par `server start`) : son existence même n'est pas révélée.
+- **Vérifier** : `zoombots check-ip` compare l'IP directe de la machine à celle vue à travers chaque proxy configuré (`✔ masquée`, ou `✘ identique ou injoignable` avec un code de retour 1).
+- **Côté utilisateurs du GUI** : le nom de domaine révèle l'IP du serveur par son DNS. Pour la cacher aussi aux utilisateurs, placer le domaine derrière un service qui fait écran (par exemple le mode « proxy » de Cloudflare) : non testé ici, et Caddy continue d'obtenir son certificat tant que les ports 80/443 restent joignables.
+
+Ce que ce dispositif ne couvre pas : le trafic reste visible du fournisseur du proxy, un hôte Zoom peut identifier un bot par son nom et son comportement, et les identifiants de compte de l'hébergeur ou du registrar (WHOIS) ne sont pas dans le périmètre.
 
 ## Cycle de vie d'un bot
 
@@ -163,6 +221,14 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 |---|---|---|
 | `ZOOMBOTS_HOST`, `ZOOMBOTS_PORT` | `127.0.0.1`, `8000` | Écoute (hors loopback : jeton obligatoire) |
 | `ZOOMBOTS_URL` | dérivée | URL de l'API pour la CLI |
+| `ZOOMBOTS_MODE` | aucun | `local` : GUI chez soi (plafonds par IP désactivés) ; `server` : serveur partagé |
+| `ZOOMBOTS_PUBLIC_ONLY` | `0` | `1` : administration injoignable hors de la machine (404) |
+| `ZOOMBOTS_PROXY` | aucun | Proxy(s) de sortie des bots, séparés par des virgules |
+| `ZOOMBOTS_REQUIRE_PROXY` | `0` | `1` : aucun bot ne démarre sans proxy |
+| `ZOOMBOTS_TRUSTED_PROXIES` | `127.0.0.1,::1` | Proxies dont `X-Forwarded-For` est cru |
+| `ZOOMBOTS_IP_MAX_SESSIONS` | `3` (`0` en local) | Sessions simultanées par IP |
+| `ZOOMBOTS_IP_MAX_BOTS` | `10` (`0` en local) | Bots actifs par IP |
+| `ZOOMBOTS_IP_SESSIONS_PER_MINUTE` | `10` (`0` en local) | Créations de session par IP et par minute |
 | `ZOOMBOTS_TOKEN` | aucun | Jeton d'administration (`/admin`, API historique, CLI) |
 | `ZOOMBOTS_ACCESS_CODE` | aucun | Code demandé pour ouvrir une session du GUI |
 | `ZOOMBOTS_MAX_SESSIONS` | `20` | Sessions GUI simultanées |
@@ -172,7 +238,7 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 | `ZOOMBOTS_MAX_UPLOAD_MB` | `25` | Taille maximale d'un son |
 | `ZOOMBOTS_MAX_SOUND_SECONDS` | `900` | Durée maximale d'un son |
 | `ZOOMBOTS_YT_TIMEOUT` | `180` | Délai d'un téléchargement YouTube (s) |
-| `ZOOMBOTS_ALLOWED_HOSTS` | aucun | Hôtes supplémentaires acceptés dans `Host` |
+| `ZOOMBOTS_ALLOWED_HOSTS` | aucun | Hôtes supplémentaires acceptés dans `Host` (`*` : tous) |
 | `ZOOMBOTS_SOUNDS` | `./sounds` | Dossier des sons |
 | `ZOOMBOTS_DATA` | `~/.local/state/zoombots` | État, captures, pidfile, logs (chemin absolu) |
 | `ZOOMBOTS_STATE` | `<data>/state.json` | Fichier d'état |
@@ -194,9 +260,10 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 
 ## État de validation
 
-- **Testé automatiquement** (`pip install -e .[dev] && pytest`, 131 tests) : parsing et domaines, classification (y compris faux positifs de chat), reconnexion et bornage, libération du sémaphore, annulation sans fuite, persistance (cycle `start → shutdown → start` réel), validation des entrées, sécurité de l'API (Host, CSRF, jeton, CSP), pipeline audio (avec un `paplay` factice), rollback PulseAudio, nettoyage des orphelins, CLI. Sessions du GUI : répartition des bots, isolation entre utilisateurs, quotas, actions répétées (séquence, attente d'admission, arrêt, remplacement, échecs), uploads (formats, taille, durée, fichier corrompu), YouTube (avec un faux yt-dlp), expiration et destruction sur fermeture du WebSocket, API HTTP et WebSocket (code d'accès, `Host`, `Origin`, CSRF). Un test pilote le **vrai GUI dans Chromium** contre un vrai serveur uvicorn avec de faux bots : déploiement, envoi d'un son, action, panneau d'un bot, glisser-déposer sur un bot, rechargement, second onglet isolé, fermeture de l'onglet qui retire les bots. Tests d'intégration sur **vrai Chromium** avec de fausses pages Zoom : chat contenant « I refuse », dialogue d'expulsion, salle d'attente, surveillance, basculement du micro.
-- **Validé manuellement** : cycle `start → spawn → status → rm → shutdown` de la CLI contre un vrai serveur (échec de lancement de Chromium compris : reconnexion, passage en `error`, aucun module PulseAudio résiduel).
+- **Testé automatiquement** (`pip install -e .[dev] && pytest`, 185 tests) : parsing et domaines, classification (y compris faux positifs de chat), reconnexion et bornage, libération du sémaphore, annulation sans fuite, persistance (cycle `start → shutdown → start` réel), validation des entrées, sécurité de l'API (Host, CSRF, jeton, CSP), pipeline audio (avec un `paplay` factice), rollback PulseAudio, nettoyage des orphelins, CLI. Sessions du GUI : répartition des bots, isolation entre utilisateurs, quotas, actions répétées (séquence, attente d'admission, arrêt, remplacement, échecs), uploads (formats, taille, durée, fichier corrompu), YouTube (avec un faux yt-dlp), expiration et destruction sur fermeture du WebSocket, API HTTP et WebSocket (code d'accès, `Host`, `Origin`, CSRF). Un test pilote le **vrai GUI dans Chromium** contre un vrai serveur uvicorn avec de faux bots : déploiement, envoi d'un son, action, panneau d'un bot, glisser-déposer sur un bot, rechargement, second onglet isolé, fermeture de l'onglet qui retire les bots. Masquage et déploiement : parsing et rotation des proxies, échec fermé sans proxy, options Chromium, nettoyage des IP, IP des clients (`X-Forwarded-For` falsifié), plafonds par IP, administration cachée, configuration du serveur, Caddyfile, DNS, CLI `gui` / `server` / `check-ip`. Tests d'intégration sur **vrai Chromium** avec de fausses pages Zoom : chat contenant « I refuse », dialogue d'expulsion, salle d'attente, surveillance, basculement du micro.
+- **Validé manuellement** : `install.sh --server` (téléchargement de Caddy, `setcap`), `zoombots server start --domain …` avec un vrai Caddy (démarrage, Caddyfile, arrêt de Caddy par `shutdown`), plafonds par IP et code d'accès à travers Caddy, GUI chez soi (`zoombots gui`), cycle `start → spawn → status → rm → shutdown` de la CLI contre un vrai serveur (échec de lancement de Chromium compris : reconnexion, passage en `error`, aucun module PulseAudio résiduel).
 - **Non validé** : le parcours de connexion sur le vrai client web Zoom. Les sélecteurs (`#input-for-name`, `#input-for-pwd`, boutons Join/Audio/Leave, `aria-label` du micro) et les textes de détection d'état sont des hypothèses, faute d'accès à une réunion. À vérifier avec `zoombots screenshot` et `zoombots logs`.
+- **Non validé** : l'obtention d'un vrai certificat Let's Encrypt (pas de domaine ici), le comportement du client web Zoom derrière un proxy HTTP (média en TCP/WebSocket attendu, non vérifié), `zoombots check-ip` avec un vrai proxy, la mise derrière Cloudflare.
 - **Non validé** : le téléchargement YouTube réel (pas d'accès à YouTube dans l'environnement de développement : seul le pipeline autour de yt-dlp est testé, avec un faux yt-dlp ; YouTube change souvent, d'où `pip install -U yt-dlp` à prévoir), la charge de plusieurs utilisateurs simultanés sur de vrais Chromium, le déploiement derrière un proxy TLS.
 - **Non validé** : le contenu audio réellement reçu par Zoom (la capture du micro virtuel était silencieuse dans l'environnement de développement, même pour un `paplay` direct, donc non imputable au code), Chromium avec `PULSE_SOURCE` sur une vraie réunion, le `Dockerfile` et `docker-compose.yml`, `install.sh` hors Debian/Ubuntu, le contournement des domaines Zoom pour les comptes `zoomgov`.
 
@@ -206,5 +273,5 @@ L'API pilote des navigateurs et lit des captures d'écran : elle n'a pas de comp
 - Plusieurs zoombots sur un même serveur PulseAudio exigent des `ZOOMBOTS_INSTANCE` distincts (sans instance, deux zoombots se déchargent mutuellement leurs micros au démarrage).
 - Chromium de Playwright : sa version doit correspondre au paquet. Un binaire existant s'utilise via `ZOOMBOTS_CHROMIUM` (sous root, Chromium exige `--no-sandbox`, non ajouté par défaut).
 - Linux uniquement. Hors périmètre : dessin, partage d'écran, réception audio, comptes utilisateurs persistants (les sessions du GUI sont éphémères).
-- La limite d'une session est par onglet : un utilisateur qui ouvre dix onglets obtient dix sessions (borné par `ZOOMBOTS_MAX_SESSIONS` et `ZOOMBOTS_MAX_BOTS`) ; il n'y a pas de limitation par adresse IP.
+- La limite d'une session est par onglet : un utilisateur qui ouvre dix onglets obtient dix sessions (borné par `ZOOMBOTS_MAX_SESSIONS`, `ZOOMBOTS_MAX_BOTS` et les plafonds par IP) ; les plafonds par adresse IP (voir plus haut) bornent ce cas.
 - `uvicorn` et `playwright` ne sont pas verrouillés (pas de lockfile).

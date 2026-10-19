@@ -9,6 +9,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from . import net
 from . import sessions as S
 
 ACCESS_CODE = os.environ.get("ZOOMBOTS_ACCESS_CODE") or None
@@ -78,11 +79,12 @@ def build_router(sessions: S.SessionManager, host_ok: Callable[[str], bool]) -> 
         }
 
     @router.post("/session")
-    async def create_session(req: SessionRequest = SessionRequest()):
+    async def create_session(request: Request, req: SessionRequest = SessionRequest()):
         if ACCESS_CODE and not (req.code and secrets.compare_digest(req.code, ACCESS_CODE)):
             raise HTTPException(401, "code d'accès incorrect")
+        ip = net.client_ip(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
         try:
-            return {"sid": sessions.create().id}
+            return {"sid": sessions.create(ip).id}
         except S.SessionError as exc:
             fail(exc)
 

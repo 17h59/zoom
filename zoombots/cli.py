@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from . import deploy
 from .log import DATA_DIR
 
 HOST = os.environ.get("ZOOMBOTS_HOST", "127.0.0.1")
@@ -20,6 +21,10 @@ PORT = int(os.environ.get("ZOOMBOTS_PORT", "8000"))
 BASE = os.environ.get("ZOOMBOTS_URL") or f"http://{'127.0.0.1' if HOST == '0.0.0.0' else HOST}:{PORT}"
 PID_FILE = Path(DATA_DIR) / "server.pid"
 LOG_FILE = Path(DATA_DIR) / "server.log"
+RUN_FILE = Path(DATA_DIR) / "run.json"  # mode, hôte et port du serveur lancé par la CLI
+CADDY_PID = Path(DATA_DIR) / "caddy.pid"
+CADDY_LOG = Path(DATA_DIR) / "caddy.log"
+CADDYFILE = Path(DATA_DIR) / "Caddyfile"
 
 
 TOKEN = os.environ.get("ZOOMBOTS_TOKEN")
@@ -144,41 +149,197 @@ def cmd_serve(args) -> int:
     return 0
 
 
-def cmd_start(args) -> int:
+def _start_server(host: str, port: int, extra_env: dict[str, str], headed: bool = False) -> int:
+    """Lance le serveur en arrière-plan et attend qu'il réponde. Renvoie son PID."""
+    global BASE, TOKEN
     if _pid():
-        raise CliError(f"déjà lancé (pid {_pid()})")
-    _require_safe_bind()
+        raise CliError(f"déjà lancé (pid {_pid()}) : `zoombots shutdown` pour l'arrêter")
     ensure_pulseaudio()
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     _rotate_log()
     cmd = [sys.executable, "-m", "zoombots"]
-    if args.headed:
+    if headed:
         if not shutil.which("xvfb-run"):
             raise CliError("--headed nécessite xvfb-run")
         cmd = ["xvfb-run", "-a", *cmd]
-    env = {**os.environ, "ZOOMBOTS_HEADED": "1" if args.headed else os.environ.get("ZOOMBOTS_HEADED", "")}
+    env = {**os.environ, "ZOOMBOTS_HEADED": "1" if headed else os.environ.get("ZOOMBOTS_HEADED", ""), **extra_env,
+           "ZOOMBOTS_HOST": host, "ZOOMBOTS_PORT": str(port)}
     with open(LOG_FILE, "ab") as log:
         proc = subprocess.Popen(cmd, stdout=log, stderr=log, start_new_session=True, env=env)
     PID_FILE.write_text(str(proc.pid))
-    for _ in range(40):
+    RUN_FILE.write_text(json.dumps({"mode": extra_env.get("ZOOMBOTS_MODE", "admin"), "host": host, "port": port}))
+    BASE = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}"
+    TOKEN = extra_env.get("ZOOMBOTS_TOKEN") or TOKEN
+    for _ in range(60):
         if proc.poll() is not None:
             PID_FILE.unlink(missing_ok=True)
             raise CliError(f"le serveur s'est arrêté au démarrage, voir {LOG_FILE}")
         try:
-            call("GET", "/bots")
-            print(f"zoombots lancé (pid {proc.pid}) : {BASE}")
-            return 0
+            call("GET", "/health")
+            return proc.pid
         except CliError as exc:
             if "serveur injoignable" not in str(exc):
-                raise  # le serveur répond mais refuse (401/403…)
+                raise
             time.sleep(0.5)
     raise CliError(f"le serveur ne répond pas, voir {LOG_FILE}")
 
 
+def cmd_start(args) -> int:
+    _require_safe_bind()
+    pid = _start_server(HOST, PORT, {}, args.headed)
+    print(f"zoombots lancé (pid {pid}) : {BASE}")
+    return 0
+
+
+def _open_browser(url: str) -> None:
+    import webbrowser
+
+    try:
+        if not webbrowser.open(url):
+            print(f"Ouvre {url} dans ton navigateur.")
+    except webbrowser.Error:
+        print(f"Ouvre {url} dans ton navigateur.")
+
+
+def cmd_gui(args) -> int:
+    """Interface web sur cette machine : rien n'est exposé sur Internet, aucun nom de domaine requis."""
+    port = args.port or PORT
+    url = f"http://127.0.0.1:{port}/"
+    info = _run_info()
+    if _pid() and info.get("mode") == "local":
+        print(f"L'interface tourne déjà : {url}")
+    else:
+        cfg_proxy = args.proxy or os.environ.get("ZOOMBOTS_PROXY")
+        pid = _start_server("127.0.0.1", port, deploy.local_env(port, cfg_proxy), args.headed)
+        print(f"Interface locale lancée (pid {pid}) : {url}")
+        print("Fermer l'onglet retire ses bots. `zoombots shutdown` arrête tout.")
+        if not cfg_proxy:
+            print("Astuce : sans proxy, Zoom voit l'adresse IP de cette machine (voir `zoombots check-ip`).")
+    if not args.no_open:
+        _open_browser(url)
+    return 0
+
+
+def _run_info() -> dict:
+    try:
+        return json.loads(RUN_FILE.read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+# -- mode serveur public ----------------------------------------------------
+
+def _start_caddy(cfg: dict) -> None:
+    caddy = deploy.find_caddy()
+    if not caddy:
+        raise CliError("Caddy est introuvable (il fournit le HTTPS automatique) : relancer `./install.sh --server`")
+    CADDYFILE.write_text(deploy.caddyfile(cfg))
+    with open(CADDY_LOG, "ab") as log:
+        proc = subprocess.Popen([caddy, "run", "--config", str(CADDYFILE), "--adapter", "caddyfile"],
+                                stdout=log, stderr=log, start_new_session=True)
+    CADDY_PID.write_text(str(proc.pid))
+    time.sleep(2)
+    if proc.poll() is not None:
+        CADDY_PID.unlink(missing_ok=True)
+        tail = CADDY_LOG.read_text(errors="replace").strip().splitlines()[-3:]
+        raise CliError("Caddy s'est arrêté : " + " | ".join(tail)
+                       + "\n(ports 80/443 occupés ou non autorisés ? `./install.sh --server` règle l'autorisation)")
+
+
+def _stop_caddy() -> None:
+    try:
+        pid = int(CADDY_PID.read_text())
+        if b"caddy" in Path(f"/proc/{pid}/cmdline").read_bytes():
+            os.kill(pid, signal.SIGTERM)
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+    CADDY_PID.unlink(missing_ok=True)
+
+
+def cmd_server_start(args) -> int:
+    """Serveur partagé (plusieurs utilisateurs). Avec --domain : HTTPS automatique via Caddy ; sans : HTTP sur le port."""
+    try:
+        cfg = deploy.update_config(deploy.load_config(), domain=args.domain, no_domain=args.no_domain,
+                                   code=args.code, proxy=args.proxy, port=args.port, email=args.email)
+    except deploy.DeployError as exc:
+        raise CliError(str(exc)) from exc
+    deploy.save_config(cfg)
+    pid = _start_server("127.0.0.1" if cfg.get("domain") else "0.0.0.0", cfg["port"], deploy.server_env(cfg))
+    if cfg.get("domain"):
+        try:
+            _start_caddy(cfg)
+        except CliError:
+            cmd_stop_server(None)
+            raise
+    print(f"Serveur lancé (pid {pid}).")
+    _print_server_info(cfg)
+    return 0
+
+
+def _print_server_info(cfg: dict) -> None:
+    domain = cfg.get("domain")
+    if domain:
+        print(f"Adresse        : https://{domain}/")
+    else:
+        ip = deploy.public_ip() or "<IP-du-serveur>"
+        print(f"Adresse        : http://{ip}:{cfg['port']}/   (sans HTTPS : ajoute un nom de domaine, voir ci-dessous)")
+    print(f"Code d'accès   : {cfg['code']}   (à donner aux utilisateurs)")
+    print(f"Jeton admin    : {cfg['token']}   (CLI et /admin, depuis le serveur uniquement)")
+    if not cfg.get("proxy"):
+        print("⚠ Aucun proxy : Zoom verra l'adresse IP de ce serveur. `zoombots server start --proxy http://hôte:port`")
+    else:
+        print("Sortie des bots : via proxy (jamais directe). Vérifier : `zoombots check-ip`")
+    if not domain:
+        print("Pour un nom de domaine : `zoombots server start --domain bots.monsite.fr` puis `zoombots server dns`.")
+
+
+def cmd_server_dns(args) -> int:
+    cfg = deploy.load_config()
+    domain = args.domain or cfg.get("domain")
+    if not domain:
+        raise CliError("indique le domaine : `zoombots server dns --domain bots.monsite.fr`")
+    try:
+        domain = deploy.validate_domain(domain)
+        report = deploy.dns_report(domain)
+    except deploy.DeployError as exc:
+        raise CliError(str(exc)) from exc
+    print(deploy.dns_help(report))
+    return 0 if report["ok"] else 1
+
+
+def cmd_server_info(args) -> int:
+    cfg = deploy.load_config()
+    if not cfg:
+        raise CliError("serveur non configuré : `zoombots server start`")
+    _print_server_info(cfg)
+    return 0
+
+
+def cmd_check_ip(args) -> int:
+    """Vérifie que les bots ne sortent pas avec l'adresse IP de cette machine."""
+    urls = args.proxy or [p for p in (os.environ.get("ZOOMBOTS_PROXY") or deploy.load_config().get("proxy") or "").split(",") if p]
+    try:
+        report = deploy.check_egress(urls)
+    except deploy.DeployError as exc:
+        raise CliError(str(exc)) from exc
+    print(f"IP directe de cette machine : {report['direct'] or 'inconnue (pas de réseau ?)'}")
+    if not urls:
+        print("⚠ Aucun proxy configuré : les bots sortent avec cette adresse IP.")
+        return 1
+    bad = False
+    for row in report["proxies"]:
+        status = "✔ masquée" if row["masked"] else "✘ identique ou injoignable"
+        bad |= not row["masked"]
+        print(f"via {row['proxy']} : {row['ip'] or 'échec'}   {status}")
+    return 1 if bad else 0
+
+
 def cmd_stop_server(args) -> int:
+    _stop_caddy()
     pid = _pid()
     if not pid:
         PID_FILE.unlink(missing_ok=True)
+        RUN_FILE.unlink(missing_ok=True)
         print("serveur non lancé")
         return 0
     group = os.getpgid(pid)
@@ -204,6 +365,7 @@ def cmd_stop_server(args) -> int:
 
         asyncio.run(cleanup_orphans())
     PID_FILE.unlink(missing_ok=True)
+    RUN_FILE.unlink(missing_ok=True)
     print("serveur arrêté")
     return 0
 
@@ -347,6 +509,28 @@ def build_parser() -> argparse.ArgumentParser:
         sp.set_defaults(fn=fn)
         return sp
 
+    sp = add("gui", cmd_gui, "lance l'interface web chez toi (local, sans domaine) et ouvre le navigateur")
+    sp.add_argument("--port", type=int, help="port (défaut 8000)")
+    sp.add_argument("--proxy", help="proxy de sortie des bots (masque l'IP de cette machine)")
+    sp.add_argument("--no-open", action="store_true", help="n'ouvre pas le navigateur")
+    sp.add_argument("--headed", action="store_true")
+    srv = sub.add_parser("server", help="serveur partagé pour plusieurs utilisateurs (avec ou sans nom de domaine)")
+    ssub = srv.add_subparsers(dest="server_cmd", required=True)
+    sp = ssub.add_parser("start", help="configure et lance le serveur (HTTPS automatique avec --domain)")
+    sp.set_defaults(fn=cmd_server_start)
+    sp.add_argument("--domain", help="nom de domaine, ex. bots.monsite.fr")
+    sp.add_argument("--no-domain", action="store_true", help="oublie le domaine configuré (HTTP direct)")
+    sp.add_argument("--code", help="code d'accès des utilisateurs (généré sinon)")
+    sp.add_argument("--proxy", help="proxy(s) de sortie des bots, séparés par des virgules")
+    sp.add_argument("--port", type=int, help="port de l'application (défaut 8000)")
+    sp.add_argument("--email", help="e-mail pour Let's Encrypt (avis d'expiration)")
+    sp = ssub.add_parser("dns", help="affiche l'enregistrement DNS à créer et vérifie qu'il est en place")
+    sp.set_defaults(fn=cmd_server_dns)
+    sp.add_argument("--domain")
+    sp = ssub.add_parser("info", help="rappelle l'adresse, le code d'accès et le jeton")
+    sp.set_defaults(fn=cmd_server_info)
+    sp = add("check-ip", cmd_check_ip, "vérifie que les bots sortent par le proxy et pas par l'IP de cette machine")
+    sp.add_argument("--proxy", action="append", help="proxy à tester (défaut : celui configuré)")
     add("serve", cmd_serve, "lance le serveur au premier plan")
     sp = add("start", cmd_start, "lance le serveur en arrière-plan")
     sp.add_argument("--headed", action="store_true", help="Chromium non headless sous xvfb")
@@ -389,8 +573,19 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _adopt_running_server() -> None:
+    """Les commandes (list, spawn…) visent le serveur lancé par `gui` ou `server start`, avec son jeton."""
+    global BASE, TOKEN
+    info = _run_info()
+    if info and not os.environ.get("ZOOMBOTS_URL"):
+        BASE = f"http://{'127.0.0.1' if info['host'] == '0.0.0.0' else info['host']}:{info['port']}"
+    if info.get("mode") == "server" and not os.environ.get("ZOOMBOTS_TOKEN"):
+        TOKEN = deploy.load_config().get("token")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _adopt_running_server()
     if args.cmd == "rm" and not (args.all or args.bots or args.finished):
         print("zoombots rm: indiquer des bots, --all ou --finished", file=sys.stderr)
         return 2

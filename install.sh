@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Installation clef en main de zoombots (Linux). Idempotent : peut être relancé sans risque.
 #
-#   ./install.sh [--no-system-deps] [--no-browser]
+#   ./install.sh [--server] [--no-system-deps] [--no-browser]
+#
+# Sans option : installation pour un usage chez soi (`zoombots gui`).
+# --server : ajoute Caddy (HTTPS automatique) pour héberger l'appli à plusieurs utilisateurs avec un nom de domaine.
 #
 # Fonctionne avec ou sans sudo ; sous `sudo ./install.sh`, l'environnement Python est créé
 # pour l'utilisateur appelant (pas pour root).
@@ -10,10 +13,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYSTEM_DEPS=1
 BROWSER=1
+SERVER=""   # "" : demander si le terminal est interactif ; 1 : installer ; 0 : non
 
 usage() {
   cat <<'USAGE'
-Usage : ./install.sh [--no-system-deps] [--no-browser]
+Usage : ./install.sh [--server] [--no-system-deps] [--no-browser]
+  --server          installe aussi Caddy (HTTPS automatique) pour un serveur public avec nom de domaine
   --no-system-deps  n'installe aucun paquet système (python3 >= 3.11, ffmpeg, pulseaudio-utils, xvfb)
   --no-browser      ne télécharge pas Chromium
 USAGE
@@ -23,6 +28,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-system-deps) SYSTEM_DEPS=0 ;;
     --no-browser) BROWSER=0 ;;
+    --server) SERVER=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "option inconnue: $arg" >&2; usage >&2; exit 2 ;;
   esac
@@ -71,6 +77,7 @@ install_system_deps() {
   [ -n "$py" ] || need+=(python)
   [ -z "$py" ] || have_venv "$py" || need+=(venv)
   command -v ffmpeg >/dev/null || need+=(ffmpeg)
+  command -v curl   >/dev/null || need+=(curl)
   command -v pactl  >/dev/null || need+=(pulse)
   command -v pulseaudio >/dev/null || command -v pipewire-pulse >/dev/null || need+=(pulseserver)
   local want_xvfb=0
@@ -93,6 +100,7 @@ install_system_deps() {
         python) pk+=(python3 python3-venv python3-pip) ;;
         venv) pk+=(python3-venv python3-pip) ;;
         ffmpeg) pk+=(ffmpeg) ;;
+        curl) pk+=(curl) ;;
         pulse) pk+=(pulseaudio-utils) ;;
         pulseserver) pk+=(pulseaudio) ;;
       esac
@@ -105,6 +113,7 @@ install_system_deps() {
       case "$n" in
         python|venv) pk+=(python3 python3-pip) ;;
         ffmpeg) pk+=(ffmpeg-free) ;;
+        curl) pk+=(curl) ;;
         pulse) pk+=(pulseaudio-utils) ;;
         pulseserver) pk+=(pipewire-pulseaudio) ;;  # évite le conflit pulseaudio / pipewire-pulseaudio des Fedora récentes
       esac
@@ -117,6 +126,7 @@ install_system_deps() {
       case "$n" in
         python|venv) pk+=(python python-pip) ;;
         ffmpeg) pk+=(ffmpeg) ;;
+        curl) pk+=(curl) ;;
         pulse|pulseserver) pk+=(libpulse pulseaudio) ;;
       esac
     done
@@ -165,6 +175,35 @@ else
   as_user ln -sf "$VENV/bin/zoombots" "$BIN_DIR/zoombots"
 fi
 
+# Serveur public : Caddy fournit le HTTPS (certificat Let's Encrypt automatique) pour un nom de domaine.
+if [ -z "$SERVER" ] && [ -t 0 ] && [ -t 1 ]; then
+  read -r -p "Héberger aussi l'appli pour d'autres utilisateurs, avec un nom de domaine ? (installe Caddy) [o/N] " answer || answer=""
+  case "$answer" in o|O|oui|y|Y|yes) SERVER=1 ;; *) SERVER=0 ;; esac
+fi
+
+install_caddy() {
+  local caddy="$BIN_DIR/caddy"
+  if command -v caddy >/dev/null 2>&1; then caddy="$(command -v caddy)"; say "Caddy déjà présent ($caddy)"
+  elif [ -x "$caddy" ]; then say "Caddy déjà présent ($caddy)"
+  else
+    command -v curl >/dev/null || die "curl est requis pour télécharger Caddy"
+    local arch
+    case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; armv7l) arch=armv7 ;; *) die "architecture non gérée pour Caddy : $(uname -m)" ;; esac
+    say "téléchargement de Caddy ($arch)"
+    as_user curl -fsSL "https://caddyserver.com/api/download?os=linux&arch=$arch" -o "$caddy.tmp" || die "téléchargement de Caddy impossible"
+    as_user chmod +x "$caddy.tmp"
+    as_user "$caddy.tmp" version >/dev/null || { rm -f "$caddy.tmp"; die "le binaire Caddy téléchargé ne fonctionne pas"; }
+    as_user mv "$caddy.tmp" "$caddy"
+  fi
+  # autorise Caddy à écouter sur les ports 80 et 443 sans être root
+  if command -v setcap >/dev/null 2>&1 && { [ "$(id -u)" -eq 0 ] || [ ${#SUDO[@]} -gt 0 ]; }; then
+    as_root setcap cap_net_bind_service=+ep "$(readlink -f "$caddy")" || warn "setcap a échoué : lancer le serveur avec sudo, ou autoriser les ports 80/443"
+  else
+    warn "setcap indisponible : Caddy ne pourra pas utiliser les ports 80/443 sans droits root"
+  fi
+}
+[ "$SERVER" = "1" ] && install_caddy
+
 say "vérification"
 as_user "$VENV/bin/zoombots" --help >/dev/null
 command -v ffmpeg >/dev/null && ffmpeg -version >/dev/null 2>&1 || die "ffmpeg inutilisable"
@@ -174,9 +213,22 @@ echo
 say "Installation terminée."
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "   Ajouter au PATH : export PATH=\"$BIN_DIR:\$PATH\"" ;; esac
 cat <<MSG
-   1. Dépose des fichiers audio dans : $ROOT/sounds
-   2. zoombots start                      # lance le serveur (http://127.0.0.1:8000)
-   3. zoombots spawn <id-ou-lien> -c 3    # envoie 3 bots
-   4. zoombots play <son.mp3>             # joue sur tous les bots
+   Chez toi (le plus simple) :
+     zoombots gui                          # ouvre l'interface web dans ton navigateur
+   En ligne de commande :
+     zoombots start                        # lance le serveur (http://127.0.0.1:8000)
+     zoombots spawn <id-ou-lien> -c 3      # envoie 3 bots
+     zoombots play <son.mp3>               # joue sur tous les bots
+   Masquer ton adresse IP : zoombots gui --proxy http://hôte:port   puis   zoombots check-ip
    Aide : zoombots --help
 MSG
+if [ "$SERVER" = "1" ]; then
+cat <<MSG
+
+   Serveur partagé (plusieurs utilisateurs) :
+     zoombots server start                                 # par adresse IP, sans nom de domaine (HTTP)
+     zoombots server start --domain bots.monsite.fr        # avec nom de domaine (HTTPS automatique)
+     zoombots server dns                                   # dit quel enregistrement DNS créer chez ton registrar
+   Ouvre les ports 80 et 443 (pare-feu, box ou hébergeur) pour le HTTPS.
+MSG
+fi

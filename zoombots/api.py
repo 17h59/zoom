@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import net
 from .gui_api import build_router
 from .log import setup_logging
 from .manager import BotManager, list_sounds, sound_path
@@ -21,6 +22,8 @@ sessions = SessionManager(manager)
 
 TOKEN = os.environ.get("ZOOMBOTS_TOKEN") or None
 ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1", *filter(None, os.environ.get("ZOOMBOTS_ALLOWED_HOSTS", "").split(","))}
+# `*` : tout nom d'hôte accepté (serveur public sans nom de domaine, joint par son adresse IP)
+PUBLIC_ONLY = os.environ.get("ZOOMBOTS_PUBLIC_ONLY") == "1"  # l'administration n'est joignable que depuis la machine elle-même
 CSRF_HEADER = "x-zoombots"  # un en-tête personnalisé force un preflight CORS, que le serveur ne satisfait jamais
 
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; "
@@ -50,7 +53,7 @@ def _hostname(header: str) -> str:
 
 
 def host_allowed(header: str) -> bool:
-    return _hostname(header) in ALLOWED_HOSTS
+    return "*" in ALLOWED_HOSTS or _hostname(header) in ALLOWED_HOSTS
 
 
 def _reject(status: int, detail: str) -> JSONResponse:
@@ -60,13 +63,18 @@ def _reject(status: int, detail: str) -> JSONResponse:
 @app.middleware("http")
 async def guard(request: Request, call_next):
     """Protège une API locale sans compte : DNS rebinding (Host), CSRF (en-tête + Sec-Fetch-Site), jeton optionnel."""
-    if _hostname(request.headers.get("host", "")) not in ALLOWED_HOSTS and request.url.path != "/health":
+    if not host_allowed(request.headers.get("host", "")) and request.url.path != "/health":
         return _reject(403, "hôte non autorisé (ZOOMBOTS_ALLOWED_HOSTS)")
     if request.method not in ("GET", "HEAD"):
         if CSRF_HEADER not in request.headers or request.headers.get("sec-fetch-site") == "cross-site":
             return _reject(403, "en-tête X-Zoombots requis")
     path = request.url.path
-    if TOKEN and not (path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)):
+    public = path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
+    if PUBLIC_ONLY and not public:
+        ip = net.client_ip(request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
+        if not net.is_loopback(ip):
+            return _reject(404, "introuvable")  # l'existence de l'administration n'est pas révélée à l'extérieur
+    if TOKEN and not public:
         supplied = request.cookies.get("zb_token") or request.headers.get("authorization", "").removeprefix("Bearer ")
         if path == "/admin" and request.query_params.get("token"):
             if secrets.compare_digest(request.query_params["token"], TOKEN):

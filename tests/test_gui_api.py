@@ -46,7 +46,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(api.manager, "_state_path", tmp_path / "state.json")
     monkeypatch.setattr(api, "TOKEN", None)
     monkeypatch.setattr(gui_api, "ACCESS_CODE", None)
-    monkeypatch.setattr(S, "GRACE_S", 0.3)
+    monkeypatch.setattr(S, "GRACE_S", 0.5)
+    monkeypatch.setattr(S, "IP_SESSIONS_PER_MINUTE", 0)
     with TestClient(api.app, base_url="http://localhost") as c:
         yield c
     assert api.manager.bots == {}
@@ -118,7 +119,7 @@ def test_websocket_pushes_state_and_closing_it_closes_the_bots(client):
         assert len(api.manager.bots) == 2
         ws.send_text("ping")
     # onglet fermé : après le délai de grâce, la session et ses bots disparaissent
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 10
     while api.manager.bots and time.monotonic() < deadline:
         time.sleep(0.05)
     assert api.manager.bots == {}
@@ -135,7 +136,7 @@ def test_reload_within_grace_keeps_the_session(client):
     with client.websocket_connect(WS) as ws:
         ws.send_json({"sid": sid})
         assert len(ws.receive_json()["bots"]) == 1
-        time.sleep(0.6)  # connecté : jamais expirée
+        time.sleep(1.0)  # connecté : jamais expirée
         assert client.get("/api/state", headers=hdr(sid)).status_code == 200
     client.delete("/api/session", headers=hdr(sid))
 

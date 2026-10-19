@@ -9,6 +9,7 @@ from pathlib import Path
 
 from playwright.async_api import Browser, Error as PlaywrightError, Page, Playwright
 
+from . import net
 from .audio import VirtualMic
 from .log import DATA_DIR, log_event
 from .meeting import Meeting
@@ -104,7 +105,7 @@ class Bot:
         text = _PWD.sub(r"\1***", text)
         if self.meeting.passcode:
             text = text.replace(self.meeting.passcode, "***")
-        return text
+        return net.scrub(text)  # ni IP du serveur, ni hôte ou identifiants de proxy dans ce que voit l'utilisateur
 
     def _set_status(self, status: str, error: str | None = None) -> None:
         self.status, self.error = status, self._scrub(error)
@@ -205,12 +206,15 @@ class Bot:
         return page
 
     async def _launch(self, pw: Playwright) -> Page:
+        proxy = net.next_proxy()  # lève avant toute ressource si un proxy est exigé et absent
         await self.mic.create()
         self._browser = await pw.chromium.launch(
             headless=not HEADED,
             executable_path=CHROMIUM_PATH,
             env={**os.environ, "PULSE_SOURCE": self.mic.source},
-            args=["--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required", *LITE_ARGS],
+            proxy=proxy,
+            args=["--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required",
+                  *LITE_ARGS, *net.privacy_args(proxy is not None)],
         )
         context = await self._browser.new_context(
             permissions=["microphone"], viewport={"width": 800, "height": 600}, locale="en-US"

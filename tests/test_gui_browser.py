@@ -47,6 +47,7 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr, "cleanup_orphans", noop)
     monkeypatch.setattr(S, "ROOT", tmp_path / "sessions")
     monkeypatch.setattr(S, "GRACE_S", 0.5)
+    monkeypatch.setattr(S, "IP_SESSIONS_PER_MINUTE", 0)
     monkeypatch.setattr(api.manager, "_state_path", tmp_path / "state.json")
     monkeypatch.setattr(api, "TOKEN", None)
     monkeypatch.setattr(gui_api, "ACCESS_CODE", None)
