@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zoombots</title>
+<style>
+  body { font: 15px system-ui, sans-serif; margin: 0 auto; max-width: 860px; padding: 16px; background: #111; color: #eee; }
+  fieldset { border: 1px solid #333; border-radius: 8px; margin-bottom: 16px; }
+  input, button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid #444; background: #1c1c1c; color: inherit; }
+  button { cursor: pointer; } button:hover { background: #2a2a2a; }
+  .bot { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid #222; flex-wrap: wrap; }
+  .bot b { min-width: 120px; } .status { font-size: 12px; opacity: .8; min-width: 90px; }
+  .err { color: #f87171; font-size: 12px; }
+  #sounds button { margin: 2px; }
+</style>
+</head>
+<body>
+<h1>zoombots</h1>
+
+<fieldset><legend>Spawn</legend>
+  <input id="meeting" placeholder="ID ou lien de réunion" size="30">
+  <input id="passcode" placeholder="passcode (optionnel)" size="16">
+  <input id="name" placeholder="nom" value="Bot" size="10">
+  <input id="count" type="number" min="1" max="20" value="1" style="width:60px">
+  <button onclick="spawn()">Lancer</button>
+</fieldset>
+
+<fieldset><legend>Soundboard (tous les bots)</legend>
+  <div id="sounds"></div>
+</fieldset>
+
+<fieldset><legend>Bots</legend><div id="bots"></div></fieldset>
+
+<script>
+const $ = id => document.getElementById(id);
+const api = (path, method = 'GET', body) =>
+  fetch(path, { method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) })
+    .then(async r => { if (!r.ok) alert((await r.json()).detail); return r.json(); });
+
+async function spawn() {
+  await api('/bots', 'POST', { meeting: $('meeting').value, passcode: $('passcode').value || null,
+    name: $('name').value || 'Bot', count: +$('count').value });
+  refresh();
+}
+
+async function refresh() {
+  const [bots, sounds] = await Promise.all([api('/bots'), api('/sounds')]);
+  $('sounds').innerHTML = sounds.length
+    ? sounds.map(s => `<button onclick="api('/broadcast/sounds/${encodeURIComponent(s)}','POST')">${s}</button>`).join('')
+    : '<i>Dépose des fichiers audio dans le dossier sounds/</i>';
+  $('bots').innerHTML = bots.map(b => `
+    <div class="bot">
+      <b>${b.name}</b><span class="status">${b.status}</span>
+      <button onclick="api('/bots/${b.id}/mic','POST',{on:true})">🎤</button>
+      <button onclick="api('/bots/${b.id}/mic','POST',{on:false})">🔇</button>
+      <button onclick="api('/bots/${b.id}/stop','POST')">⏹</button>
+      ${sounds.map(s => `<button onclick="api('/bots/${b.id}/sounds/${encodeURIComponent(s)}','POST')">${s}</button>`).join('')}
+      <button onclick="api('/bots/${b.id}','DELETE').then(refresh)">Quitter</button>
+      ${b.error ? `<div class="err">${b.error}</div>` : ''}
+    </div>`).join('') || '<i>Aucun bot</i>';
+}
+refresh(); setInterval(refresh, 3000);
+</script>
+</body>
+</html>
